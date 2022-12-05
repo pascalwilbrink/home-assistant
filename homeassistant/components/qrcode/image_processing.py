@@ -1,23 +1,35 @@
-"""Support for the QR image processing."""
-from homeassistant.core import split_entity_id
-from homeassistant.components.image_processing import (
-    ImageProcessingEntity, CONF_SOURCE, CONF_ENTITY_ID, CONF_NAME)
+"""Support for the QR code image processing."""
+from __future__ import annotations
+
+import io
+
+from PIL import Image
+from pyzbar import pyzbar
+
+from homeassistant.components.image_processing import ImageProcessingEntity
+from homeassistant.const import CONF_ENTITY_ID, CONF_NAME, CONF_SOURCE
+from homeassistant.core import HomeAssistant, split_entity_id
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
 
-def setup_platform(hass, config, add_entities, discovery_info=None):
-    """Set up the demo image processing platform."""
+def setup_platform(
+    hass: HomeAssistant,
+    config: ConfigType,
+    add_entities: AddEntitiesCallback,
+    discovery_info: DiscoveryInfoType | None = None,
+) -> None:
+    """Set up the QR code image processing platform."""
     # pylint: disable=unused-argument
     entities = []
     for camera in config[CONF_SOURCE]:
-        entities.append(QrEntity(
-            camera[CONF_ENTITY_ID], camera.get(CONF_NAME)
-        ))
+        entities.append(QrEntity(camera[CONF_ENTITY_ID], camera.get(CONF_NAME)))
 
     add_entities(entities)
 
 
 class QrEntity(ImageProcessingEntity):
-    """QR image processing entity."""
+    """A QR image processing entity."""
 
     def __init__(self, camera_entity, name):
         """Initialize QR image processing entity."""
@@ -27,8 +39,7 @@ class QrEntity(ImageProcessingEntity):
         if name:
             self._name = name
         else:
-            self._name = "QR {0}".format(
-                split_entity_id(camera_entity)[1])
+            self._name = f"QR {split_entity_id(camera_entity)[1]}"
         self._state = None
 
     @property
@@ -48,10 +59,6 @@ class QrEntity(ImageProcessingEntity):
 
     def process_image(self, image):
         """Process image."""
-        import io
-        from pyzbar import pyzbar
-        from PIL import Image
-
         stream = io.BytesIO(image)
         img = Image.open(stream)
 

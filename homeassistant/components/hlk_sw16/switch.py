@@ -1,34 +1,36 @@
 """Support for HLK-SW16 switches."""
-import logging
+from typing import Any
 
-from homeassistant.components.switch import ToggleEntity
-from homeassistant.const import CONF_NAME
+from homeassistant.components.switch import SwitchEntity
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import DATA_DEVICE_REGISTER, SW16Device
+from .const import DOMAIN
 
-_LOGGER = logging.getLogger(__name__)
+PARALLEL_UPDATES = 0
 
 
-def devices_from_config(hass, domain_config):
+def devices_from_entities(hass, entry):
     """Parse configuration and add HLK-SW16 switch devices."""
-    switches = domain_config[0]
-    device_id = domain_config[1]
-    device_client = hass.data[DATA_DEVICE_REGISTER][device_id]
+    device_client = hass.data[DOMAIN][entry.entry_id][DATA_DEVICE_REGISTER]
     devices = []
-    for device_port, device_config in switches.items():
-        device_name = device_config.get(CONF_NAME, device_port)
-        device = SW16Switch(device_name, device_port, device_id, device_client)
+    for i in range(16):
+        device_port = f"{i:01x}"
+        device = SW16Switch(device_port, entry.entry_id, device_client)
         devices.append(device)
     return devices
 
 
-async def async_setup_platform(
-        hass, config, async_add_entities, discovery_info=None):
+async def async_setup_entry(
+    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+) -> None:
     """Set up the HLK-SW16 platform."""
-    async_add_entities(devices_from_config(hass, discovery_info))
+    async_add_entities(devices_from_entities(hass, entry))
 
 
-class SW16Switch(SW16Device, ToggleEntity):
+class SW16Switch(SW16Device, SwitchEntity):
     """Representation of a HLK-SW16 switch."""
 
     @property
@@ -36,10 +38,10 @@ class SW16Switch(SW16Device, ToggleEntity):
         """Return true if device is on."""
         return self._is_on
 
-    async def async_turn_on(self, **kwargs):
+    async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the device on."""
         await self._client.turn_on(self._device_port)
 
-    async def async_turn_off(self, **kwargs):
+    async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the device off."""
         await self._client.turn_off(self._device_port)

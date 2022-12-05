@@ -1,66 +1,57 @@
 """Support for LG WebOS TV notification service."""
+from __future__ import annotations
+
 import logging
+from typing import Any
 
-import voluptuous as vol
+from aiowebostv import WebOsClient, WebOsTvPairError
 
-import homeassistant.helpers.config_validation as cv
-from homeassistant.components.notify import (
-    ATTR_DATA, BaseNotificationService, PLATFORM_SCHEMA)
-from homeassistant.const import (CONF_FILENAME, CONF_HOST, CONF_ICON)
+from homeassistant.components.notify import ATTR_DATA, BaseNotificationService
+from homeassistant.const import ATTR_ICON
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
+
+from .const import ATTR_CONFIG_ENTRY_ID, DATA_CONFIG_ENTRY, DOMAIN, WEBOSTV_EXCEPTIONS
 
 _LOGGER = logging.getLogger(__name__)
 
-WEBOSTV_CONFIG_FILE = 'webostv.conf'
 
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
-    vol.Required(CONF_HOST): cv.string,
-    vol.Optional(CONF_FILENAME, default=WEBOSTV_CONFIG_FILE): cv.string,
-    vol.Optional(CONF_ICON): cv.string,
-})
-
-
-def get_service(hass, config, discovery_info=None):
+async def async_get_service(
+    hass: HomeAssistant,
+    config: ConfigType,
+    discovery_info: DiscoveryInfoType | None = None,
+) -> BaseNotificationService | None:
     """Return the notify service."""
-    from pylgtv import WebOsClient
-    from pylgtv import PyLGTVPairException
 
-    path = hass.config.path(config.get(CONF_FILENAME))
-    client = WebOsClient(
-        config.get(CONF_HOST), key_file_path=path, timeout_connect=8)
+    if discovery_info is None:
+        return None
 
-    if not client.is_registered():
-        try:
-            client.register()
-        except PyLGTVPairException:
-            _LOGGER.error("Pairing with TV failed")
-            return None
-        except OSError:
-            _LOGGER.error("TV unreachable")
-            return None
+    client = hass.data[DOMAIN][DATA_CONFIG_ENTRY][
+        discovery_info[ATTR_CONFIG_ENTRY_ID]
+    ].client
 
-    return LgWebOSNotificationService(client, config.get(CONF_ICON))
+    return LgWebOSNotificationService(client)
 
 
 class LgWebOSNotificationService(BaseNotificationService):
     """Implement the notification service for LG WebOS TV."""
 
-    def __init__(self, client, icon_path):
+    def __init__(self, client: WebOsClient) -> None:
         """Initialize the service."""
         self._client = client
-        self._icon_path = icon_path
 
-    def send_message(self, message="", **kwargs):
+    async def async_send_message(self, message: str = "", **kwargs: Any) -> None:
         """Send a message to the tv."""
-        from pylgtv import PyLGTVPairException
-
         try:
-            data = kwargs.get(ATTR_DATA)
-            icon_path = data.get(CONF_ICON, self._icon_path) if data else \
-                self._icon_path
-            self._client.send_message(message, icon_path=icon_path)
-        except PyLGTVPairException:
+            if not self._client.is_connected():
+                await self._client.connect()
+
+            data = kwargs[ATTR_DATA]
+            icon_path = data.get(ATTR_ICON) if data else None
+            await self._client.send_message(message, icon_path=icon_path)
+        except WebOsTvPairError:
             _LOGGER.error("Pairing with TV failed")
         except FileNotFoundError:
             _LOGGER.error("Icon %s not found", icon_path)
-        except OSError:
+        except WEBOSTV_EXCEPTIONS:
             _LOGGER.error("TV unreachable")

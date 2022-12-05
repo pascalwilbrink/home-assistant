@@ -1,47 +1,60 @@
 """Support for HomeMatic binary sensors."""
-import logging
+from __future__ import annotations
 
-from homeassistant.components.binary_sensor import BinarySensorDevice
-from homeassistant.components.homematic import (
-    ATTR_DISCOVERY_TYPE, DISCOVER_BATTERY)
-from homeassistant.const import DEVICE_CLASS_BATTERY
+from homeassistant.components.binary_sensor import (
+    BinarySensorDeviceClass,
+    BinarySensorEntity,
+)
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
-from . import ATTR_DISCOVER_DEVICES, HMDevice
-
-_LOGGER = logging.getLogger(__name__)
+from .const import ATTR_DISCOVER_DEVICES, ATTR_DISCOVERY_TYPE, DISCOVER_BATTERY
+from .entity import HMDevice
 
 SENSOR_TYPES_CLASS = {
-    'IPShutterContact': 'opening',
-    'MaxShutterContact': 'opening',
-    'Motion': 'motion',
-    'MotionV2': 'motion',
-    'PresenceIP': 'motion',
-    'Remote': None,
-    'RemoteMotion': None,
-    'ShutterContact': 'opening',
-    'Smoke': 'smoke',
-    'SmokeV2': 'smoke',
-    'TiltSensor': None,
-    'WeatherSensor': None,
+    "IPShutterContact": BinarySensorDeviceClass.OPENING,
+    "IPShutterContactSabotage": BinarySensorDeviceClass.OPENING,
+    "MaxShutterContact": BinarySensorDeviceClass.OPENING,
+    "Motion": BinarySensorDeviceClass.MOTION,
+    "MotionV2": BinarySensorDeviceClass.MOTION,
+    "PresenceIP": BinarySensorDeviceClass.MOTION,
+    "Remote": None,
+    "RemoteMotion": None,
+    "ShutterContact": BinarySensorDeviceClass.OPENING,
+    "Smoke": BinarySensorDeviceClass.SMOKE,
+    "SmokeV2": BinarySensorDeviceClass.SMOKE,
+    "TiltSensor": None,
+    "WeatherSensor": None,
+    "IPContact": BinarySensorDeviceClass.OPENING,
+    "MotionIP": BinarySensorDeviceClass.MOTION,
+    "MotionIPV2": BinarySensorDeviceClass.MOTION,
+    "MotionIPContactSabotage": BinarySensorDeviceClass.MOTION,
+    "IPRemoteMotionV2": BinarySensorDeviceClass.MOTION,
 }
 
 
-def setup_platform(hass, config, add_entities, discovery_info=None):
+def setup_platform(
+    hass: HomeAssistant,
+    config: ConfigType,
+    add_entities: AddEntitiesCallback,
+    discovery_info: DiscoveryInfoType | None = None,
+) -> None:
     """Set up the HomeMatic binary sensor platform."""
     if discovery_info is None:
         return
 
-    devices = []
+    devices: list[BinarySensorEntity] = []
     for conf in discovery_info[ATTR_DISCOVER_DEVICES]:
         if discovery_info[ATTR_DISCOVERY_TYPE] == DISCOVER_BATTERY:
             devices.append(HMBatterySensor(conf))
         else:
             devices.append(HMBinarySensor(conf))
 
-    add_entities(devices)
+    add_entities(devices, True)
 
 
-class HMBinarySensor(HMDevice, BinarySensorDevice):
+class HMBinarySensor(HMDevice, BinarySensorEntity):
     """Representation of a binary HomeMatic device."""
 
     @property
@@ -55,9 +68,9 @@ class HMBinarySensor(HMDevice, BinarySensorDevice):
     def device_class(self):
         """Return the class of this sensor from DEVICE_CLASSES."""
         # If state is MOTION (Only RemoteMotion working)
-        if self._state == 'MOTION':
-            return 'motion'
-        return SENSOR_TYPES_CLASS.get(self._hmdevice.__class__.__name__, None)
+        if self._state == "MOTION":
+            return BinarySensorDeviceClass.MOTION
+        return SENSOR_TYPES_CLASS.get(self._hmdevice.__class__.__name__)
 
     def _init_data_struct(self):
         """Generate the data dictionary (self._data) from metadata."""
@@ -66,13 +79,10 @@ class HMBinarySensor(HMDevice, BinarySensorDevice):
             self._data.update({self._state: None})
 
 
-class HMBatterySensor(HMDevice, BinarySensorDevice):
+class HMBatterySensor(HMDevice, BinarySensorEntity):
     """Representation of an HomeMatic low battery sensor."""
 
-    @property
-    def device_class(self):
-        """Return battery as a device class."""
-        return DEVICE_CLASS_BATTERY
+    _attr_device_class = BinarySensorDeviceClass.BATTERY
 
     @property
     def is_on(self):

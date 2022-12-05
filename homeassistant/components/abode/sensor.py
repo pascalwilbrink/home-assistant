@@ -1,77 +1,84 @@
 """Support for Abode Security System sensors."""
-import logging
+from __future__ import annotations
 
-from homeassistant.const import (
-    DEVICE_CLASS_HUMIDITY, DEVICE_CLASS_ILLUMINANCE, DEVICE_CLASS_TEMPERATURE)
+from typing import cast
 
-from . import DOMAIN as ABODE_DOMAIN, AbodeDevice
+from abodepy.devices.sensor import CONST, AbodeSensor as AbodeSense
 
-_LOGGER = logging.getLogger(__name__)
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorEntityDescription,
+)
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-# Sensor types: Name, icon
-SENSOR_TYPES = {
-    'temp': ['Temperature', DEVICE_CLASS_TEMPERATURE],
-    'humidity': ['Humidity', DEVICE_CLASS_HUMIDITY],
-    'lux': ['Lux', DEVICE_CLASS_ILLUMINANCE],
-}
+from . import AbodeDevice, AbodeSystem
+from .const import DOMAIN
+
+SENSOR_TYPES: tuple[SensorEntityDescription, ...] = (
+    SensorEntityDescription(
+        key=CONST.TEMP_STATUS_KEY,
+        name="Temperature",
+        device_class=SensorDeviceClass.TEMPERATURE,
+    ),
+    SensorEntityDescription(
+        key=CONST.HUMI_STATUS_KEY,
+        name="Humidity",
+        device_class=SensorDeviceClass.HUMIDITY,
+    ),
+    SensorEntityDescription(
+        key=CONST.LUX_STATUS_KEY,
+        name="Lux",
+        device_class=SensorDeviceClass.ILLUMINANCE,
+    ),
+)
 
 
-def setup_platform(hass, config, add_entities, discovery_info=None):
-    """Set up a sensor for an Abode device."""
-    import abodepy.helpers.constants as CONST
+async def async_setup_entry(
+    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+) -> None:
+    """Set up Abode sensor devices."""
+    data: AbodeSystem = hass.data[DOMAIN]
 
-    data = hass.data[ABODE_DOMAIN]
-
-    devices = []
-    for device in data.abode.get_devices(generic_type=CONST.TYPE_SENSOR):
-        if data.is_excluded(device):
-            continue
-
-        for sensor_type in SENSOR_TYPES:
-            devices.append(AbodeSensor(data, device, sensor_type))
-
-    data.devices.extend(devices)
-
-    add_entities(devices)
+    async_add_entities(
+        AbodeSensor(data, device, description)
+        for description in SENSOR_TYPES
+        for device in data.abode.get_devices(generic_type=CONST.TYPE_SENSOR)
+        if description.key in device.get_value(CONST.STATUSES_KEY)
+    )
 
 
-class AbodeSensor(AbodeDevice):
+class AbodeSensor(AbodeDevice, SensorEntity):
     """A sensor implementation for Abode devices."""
 
-    def __init__(self, data, device, sensor_type):
+    _device: AbodeSense
+
+    def __init__(
+        self,
+        data: AbodeSystem,
+        device: AbodeSense,
+        description: SensorEntityDescription,
+    ) -> None:
         """Initialize a sensor for an Abode device."""
         super().__init__(data, device)
-        self._sensor_type = sensor_type
-        self._name = '{0} {1}'.format(
-            self._device.name, SENSOR_TYPES[self._sensor_type][0])
-        self._device_class = SENSOR_TYPES[self._sensor_type][1]
+        self.entity_description = description
+        self._attr_unique_id = f"{device.device_uuid}-{description.key}"
+        if description.key == CONST.TEMP_STATUS_KEY:
+            self._attr_native_unit_of_measurement = device.temp_unit
+        elif description.key == CONST.HUMI_STATUS_KEY:
+            self._attr_native_unit_of_measurement = device.humidity_unit
+        elif description.key == CONST.LUX_STATUS_KEY:
+            self._attr_native_unit_of_measurement = device.lux_unit
 
     @property
-    def name(self):
-        """Return the name of the sensor."""
-        return self._name
-
-    @property
-    def device_class(self):
-        """Return the device class."""
-        return self._device_class
-
-    @property
-    def state(self):
+    def native_value(self) -> float | None:
         """Return the state of the sensor."""
-        if self._sensor_type == 'temp':
-            return self._device.temp
-        if self._sensor_type == 'humidity':
-            return self._device.humidity
-        if self._sensor_type == 'lux':
-            return self._device.lux
-
-    @property
-    def unit_of_measurement(self):
-        """Return the units of measurement."""
-        if self._sensor_type == 'temp':
-            return self._device.temp_unit
-        if self._sensor_type == 'humidity':
-            return self._device.humidity_unit
-        if self._sensor_type == 'lux':
-            return self._device.lux_unit
+        if self.entity_description.key == CONST.TEMP_STATUS_KEY:
+            return cast(float, self._device.temp)
+        if self.entity_description.key == CONST.HUMI_STATUS_KEY:
+            return cast(float, self._device.humidity)
+        if self.entity_description.key == CONST.LUX_STATUS_KEY:
+            return cast(float, self._device.lux)
+        return None

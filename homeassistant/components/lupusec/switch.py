@@ -1,22 +1,30 @@
 """Support for Lupusec Security System switches."""
-from datetime import timedelta
-import logging
+from __future__ import annotations
 
-from homeassistant.components.switch import SwitchDevice
+from datetime import timedelta
+from typing import Any
+
+import lupupy.constants as CONST
+
+from homeassistant.components.switch import SwitchEntity
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
 from . import DOMAIN as LUPUSEC_DOMAIN, LupusecDevice
 
 SCAN_INTERVAL = timedelta(seconds=2)
 
-_LOGGER = logging.getLogger(__name__)
 
-
-def setup_platform(hass, config, add_entities, discovery_info=None):
+def setup_platform(
+    hass: HomeAssistant,
+    config: ConfigType,
+    add_entities: AddEntitiesCallback,
+    discovery_info: DiscoveryInfoType | None = None,
+) -> None:
     """Set up Lupusec switch devices."""
     if discovery_info is None:
         return
-
-    import lupupy.constants as CONST
 
     data = hass.data[LUPUSEC_DOMAIN]
 
@@ -29,14 +37,14 @@ def setup_platform(hass, config, add_entities, discovery_info=None):
     add_entities(devices)
 
 
-class LupusecSwitch(LupusecDevice, SwitchDevice):
+class LupusecSwitch(LupusecDevice, SwitchEntity):
     """Representation of a Lupusec switch."""
 
-    def turn_on(self, **kwargs):
+    def turn_on(self, **kwargs: Any) -> None:
         """Turn on the device."""
         self._device.switch_on()
 
-    def turn_off(self, **kwargs):
+    def turn_off(self, **kwargs: Any) -> None:
         """Turn off the device."""
         self._device.switch_off()
 

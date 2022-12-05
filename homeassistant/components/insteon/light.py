@@ -1,60 +1,74 @@
 """Support for Insteon lights via PowerLinc Modem."""
-import logging
+from typing import Any
+
+from pyinsteon.config import ON_LEVEL
 
 from homeassistant.components.light import (
-    ATTR_BRIGHTNESS, SUPPORT_BRIGHTNESS, Light)
+    ATTR_BRIGHTNESS,
+    DOMAIN as LIGHT_DOMAIN,
+    ColorMode,
+    LightEntity,
+)
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from . import InsteonEntity
-
-_LOGGER = logging.getLogger(__name__)
+from .const import SIGNAL_ADD_ENTITIES
+from .insteon_entity import InsteonEntity
+from .utils import async_add_insteon_entities
 
 MAX_BRIGHTNESS = 255
 
 
-async def async_setup_platform(
-        hass, config, async_add_entities, discovery_info=None):
-    """Set up the Insteon component."""
-    insteon_modem = hass.data['insteon'].get('modem')
+async def async_setup_entry(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up the Insteon lights from a config entry."""
 
-    address = discovery_info['address']
-    device = insteon_modem.devices[address]
-    state_key = discovery_info['state_key']
+    @callback
+    def async_add_insteon_light_entities(discovery_info=None):
+        """Add the Insteon entities for the platform."""
+        async_add_insteon_entities(
+            hass, LIGHT_DOMAIN, InsteonDimmerEntity, async_add_entities, discovery_info
+        )
 
-    _LOGGER.debug('Adding device %s entity %s to Light platform',
-                  device.address.hex, device.states[state_key].name)
-
-    new_entity = InsteonDimmerDevice(device, state_key)
-
-    async_add_entities([new_entity])
+    signal = f"{SIGNAL_ADD_ENTITIES}_{LIGHT_DOMAIN}"
+    async_dispatcher_connect(hass, signal, async_add_insteon_light_entities)
+    async_add_insteon_light_entities()
 
 
-class InsteonDimmerDevice(InsteonEntity, Light):
-    """A Class for an Insteon device."""
+class InsteonDimmerEntity(InsteonEntity, LightEntity):
+    """A Class for an Insteon light entity."""
+
+    _attr_color_mode = ColorMode.BRIGHTNESS
+    _attr_supported_color_modes = {ColorMode.BRIGHTNESS}
 
     @property
     def brightness(self):
         """Return the brightness of this light between 0..255."""
-        onlevel = self._insteon_device_state.value
-        return int(onlevel)
+        return self._insteon_device_group.value
 
     @property
-    def is_on(self):
+    def is_on(self) -> bool:
         """Return the boolean response if the node is on."""
         return bool(self.brightness)
 
-    @property
-    def supported_features(self):
-        """Flag supported features."""
-        return SUPPORT_BRIGHTNESS
-
-    async def async_turn_on(self, **kwargs):
-        """Turn device on."""
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Turn light on."""
         if ATTR_BRIGHTNESS in kwargs:
             brightness = int(kwargs[ATTR_BRIGHTNESS])
-            self._insteon_device_state.set_level(brightness)
+        elif self._insteon_device_group.group == 1:
+            brightness = self.get_device_property(ON_LEVEL)
+        if brightness:
+            await self._insteon_device.async_on(
+                on_level=brightness, group=self._insteon_device_group.group
+            )
         else:
-            self._insteon_device_state.on()
+            await self._insteon_device.async_on(group=self._insteon_device_group.group)
 
-    async def async_turn_off(self, **kwargs):
-        """Turn device off."""
-        self._insteon_device_state.off()
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Turn light off."""
+        await self._insteon_device.async_off(self._insteon_device_group.group)

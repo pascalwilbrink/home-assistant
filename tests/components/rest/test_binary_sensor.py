@@ -1,206 +1,475 @@
 """The tests for the REST binary sensor platform."""
-import unittest
-from pytest import raises
-from unittest.mock import patch, Mock
 
-import requests
-from requests.exceptions import Timeout, MissingSchema
-import requests_mock
+import asyncio
+from http import HTTPStatus
+from unittest.mock import MagicMock, patch
 
-from homeassistant.exceptions import PlatformNotReady
-from homeassistant.setup import setup_component
-import homeassistant.components.binary_sensor as binary_sensor
-import homeassistant.components.rest.binary_sensor as rest
-from homeassistant.const import STATE_ON, STATE_OFF
-from homeassistant.helpers import template
-
-from tests.common import get_test_home_assistant, assert_setup_component
+import httpx
 import pytest
+import respx
+
+from homeassistant import config as hass_config
+from homeassistant.components.binary_sensor import BinarySensorDeviceClass
+from homeassistant.const import (
+    ATTR_DEVICE_CLASS,
+    ATTR_ENTITY_ID,
+    CONTENT_TYPE_JSON,
+    SERVICE_RELOAD,
+    STATE_OFF,
+    STATE_ON,
+    STATE_UNAVAILABLE,
+    Platform,
+)
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
+from homeassistant.setup import async_setup_component
+
+from tests.common import get_fixture_path
 
 
-class TestRestBinarySensorSetup(unittest.TestCase):
-    """Tests for setting up the REST binary sensor platform."""
-
-    DEVICES = []
-
-    def add_devices(self, devices, update_before_add=False):
-        """Mock add devices."""
-        for device in devices:
-            self.DEVICES.append(device)
-
-    def setUp(self):
-        """Set up things to be run when tests are started."""
-        self.hass = get_test_home_assistant()
-        # Reset for this test.
-        self.DEVICES = []
-
-    def tearDown(self):
-        """Stop everything that was started."""
-        self.hass.stop()
-
-    def test_setup_missing_config(self):
-        """Test setup with configuration missing required entries."""
-        with assert_setup_component(0):
-            assert setup_component(self.hass, binary_sensor.DOMAIN, {
-                'binary_sensor': {'platform': 'rest'}})
-
-    def test_setup_missing_schema(self):
-        """Test setup with resource missing schema."""
-        with pytest.raises(MissingSchema):
-            rest.setup_platform(self.hass, {
-                'platform': 'rest',
-                'resource': 'localhost',
-                'method': 'GET'
-            }, None)
-
-    @patch('requests.Session.send',
-           side_effect=requests.exceptions.ConnectionError())
-    def test_setup_failed_connect(self, mock_req):
-        """Test setup when connection error occurs."""
-        with raises(PlatformNotReady):
-            rest.setup_platform(self.hass, {
-                'platform': 'rest',
-                'resource': 'http://localhost',
-            }, self.add_devices, None)
-        assert len(self.DEVICES) == 0
-
-    @patch('requests.Session.send', side_effect=Timeout())
-    def test_setup_timeout(self, mock_req):
-        """Test setup when connection timeout occurs."""
-        with raises(PlatformNotReady):
-            rest.setup_platform(self.hass, {
-                'platform': 'rest',
-                'resource': 'http://localhost',
-            }, self.add_devices, None)
-        assert len(self.DEVICES) == 0
-
-    @requests_mock.Mocker()
-    def test_setup_minimum(self, mock_req):
-        """Test setup with minimum configuration."""
-        mock_req.get('http://localhost', status_code=200)
-        with assert_setup_component(1, 'binary_sensor'):
-            assert setup_component(self.hass, 'binary_sensor', {
-                'binary_sensor': {
-                    'platform': 'rest',
-                    'resource': 'http://localhost'
-                }
-            })
-        assert 1 == mock_req.call_count
-
-    @requests_mock.Mocker()
-    def test_setup_get(self, mock_req):
-        """Test setup with valid configuration."""
-        mock_req.get('http://localhost', status_code=200)
-        with assert_setup_component(1, 'binary_sensor'):
-            assert setup_component(self.hass, 'binary_sensor', {
-                'binary_sensor': {
-                    'platform': 'rest',
-                    'resource': 'http://localhost',
-                    'method': 'GET',
-                    'value_template': '{{ value_json.key }}',
-                    'name': 'foo',
-                    'verify_ssl': 'true',
-                    'authentication': 'basic',
-                    'username': 'my username',
-                    'password': 'my password',
-                    'headers': {'Accept': 'application/json'}
-                }
-            })
-        assert 1 == mock_req.call_count
-
-    @requests_mock.Mocker()
-    def test_setup_post(self, mock_req):
-        """Test setup with valid configuration."""
-        mock_req.post('http://localhost', status_code=200)
-        with assert_setup_component(1, 'binary_sensor'):
-            assert setup_component(self.hass, 'binary_sensor', {
-                'binary_sensor': {
-                    'platform': 'rest',
-                    'resource': 'http://localhost',
-                    'method': 'POST',
-                    'value_template': '{{ value_json.key }}',
-                    'payload': '{ "device": "toaster"}',
-                    'name': 'foo',
-                    'verify_ssl': 'true',
-                    'authentication': 'basic',
-                    'username': 'my username',
-                    'password': 'my password',
-                    'headers': {'Accept': 'application/json'}
-                }
-            })
-        assert 1 == mock_req.call_count
+async def test_setup_missing_basic_config(hass: HomeAssistant) -> None:
+    """Test setup with configuration missing required entries."""
+    assert await async_setup_component(
+        hass, Platform.BINARY_SENSOR, {"binary_sensor": {"platform": "rest"}}
+    )
+    await hass.async_block_till_done()
+    assert len(hass.states.async_all("binary_sensor")) == 0
 
 
-class TestRestBinarySensor(unittest.TestCase):
-    """Tests for REST binary sensor platform."""
+async def test_setup_missing_config(hass: HomeAssistant) -> None:
+    """Test setup with configuration missing required entries."""
+    assert await async_setup_component(
+        hass,
+        Platform.BINARY_SENSOR,
+        {
+            "binary_sensor": {
+                "platform": "rest",
+                "resource": "localhost",
+                "method": "GET",
+            }
+        },
+    )
+    await hass.async_block_till_done()
+    assert len(hass.states.async_all("binary_sensor")) == 0
 
-    def setUp(self):
-        """Set up things to be run when tests are started."""
-        self.hass = get_test_home_assistant()
-        self.rest = Mock('RestData')
-        self.rest.update = Mock('RestData.update',
-                                side_effect=self.update_side_effect(
-                                    '{ "key": false }'))
-        self.name = 'foo'
-        self.device_class = 'light'
-        self.value_template = \
-            template.Template('{{ value_json.key }}', self.hass)
 
-        self.binary_sensor = rest.RestBinarySensor(
-            self.hass, self.rest, self.name, self.device_class,
-            self.value_template)
+@respx.mock
+async def test_setup_failed_connect(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Test setup when connection error occurs."""
 
-    def tearDown(self):
-        """Stop everything that was started."""
-        self.hass.stop()
+    respx.get("http://localhost").mock(
+        side_effect=httpx.RequestError("server offline", request=MagicMock())
+    )
+    assert await async_setup_component(
+        hass,
+        Platform.BINARY_SENSOR,
+        {
+            "binary_sensor": {
+                "platform": "rest",
+                "resource": "http://localhost",
+                "method": "GET",
+            }
+        },
+    )
+    await hass.async_block_till_done()
+    assert len(hass.states.async_all("binary_sensor")) == 0
+    assert "server offline" in caplog.text
 
-    def update_side_effect(self, data):
-        """Side effect function for mocking RestData.update()."""
-        self.rest.data = data
 
-    def test_name(self):
-        """Test the name."""
-        assert self.name == self.binary_sensor.name
+@respx.mock
+async def test_setup_timeout(hass: HomeAssistant) -> None:
+    """Test setup when connection timeout occurs."""
+    respx.get("http://localhost").mock(side_effect=asyncio.TimeoutError())
+    assert await async_setup_component(
+        hass,
+        Platform.BINARY_SENSOR,
+        {
+            "binary_sensor": {
+                "platform": "rest",
+                "resource": "localhost",
+                "method": "GET",
+            }
+        },
+    )
+    await hass.async_block_till_done()
+    assert len(hass.states.async_all("binary_sensor")) == 0
 
-    def test_device_class(self):
-        """Test the device class."""
-        assert self.device_class == self.binary_sensor.device_class
 
-    def test_initial_state(self):
-        """Test the initial state."""
-        self.binary_sensor.update()
-        assert STATE_OFF == self.binary_sensor.state
+@respx.mock
+async def test_setup_minimum(hass: HomeAssistant) -> None:
+    """Test setup with minimum configuration."""
+    respx.get("http://localhost") % HTTPStatus.OK
+    assert await async_setup_component(
+        hass,
+        Platform.BINARY_SENSOR,
+        {
+            "binary_sensor": {
+                "platform": "rest",
+                "resource": "http://localhost",
+                "method": "GET",
+            }
+        },
+    )
+    await hass.async_block_till_done()
+    assert len(hass.states.async_all("binary_sensor")) == 1
 
-    def test_update_when_value_is_none(self):
-        """Test state gets updated to unknown when sensor returns no data."""
-        self.rest.update = Mock(
-            'RestData.update',
-            side_effect=self.update_side_effect(None))
-        self.binary_sensor.update()
-        assert not self.binary_sensor.available
 
-    def test_update_when_value_changed(self):
-        """Test state gets updated when sensor returns a new status."""
-        self.rest.update = Mock('rest.RestData.update',
-                                side_effect=self.update_side_effect(
-                                    '{ "key": true }'))
-        self.binary_sensor.update()
-        assert STATE_ON == self.binary_sensor.state
-        assert self.binary_sensor.available
+@respx.mock
+async def test_setup_minimum_resource_template(hass: HomeAssistant) -> None:
+    """Test setup with minimum configuration (resource_template)."""
+    respx.get("http://localhost") % HTTPStatus.OK
+    assert await async_setup_component(
+        hass,
+        Platform.BINARY_SENSOR,
+        {
+            "binary_sensor": {
+                "platform": "rest",
+                "resource_template": "{% set url = 'http://localhost' %}{{ url }}",
+            }
+        },
+    )
+    await hass.async_block_till_done()
+    assert len(hass.states.async_all("binary_sensor")) == 1
 
-    def test_update_when_failed_request(self):
-        """Test state gets updated when sensor returns a new status."""
-        self.rest.update = Mock('rest.RestData.update',
-                                side_effect=self.update_side_effect(None))
-        self.binary_sensor.update()
-        assert not self.binary_sensor.available
 
-    def test_update_with_no_template(self):
-        """Test update when there is no value template."""
-        self.rest.update = Mock('rest.RestData.update',
-                                side_effect=self.update_side_effect('true'))
-        self.binary_sensor = rest.RestBinarySensor(
-            self.hass, self.rest, self.name, self.device_class, None)
-        self.binary_sensor.update()
-        assert STATE_ON == self.binary_sensor.state
-        assert self.binary_sensor.available
+@respx.mock
+async def test_setup_duplicate_resource_template(hass: HomeAssistant) -> None:
+    """Test setup with duplicate resources."""
+    respx.get("http://localhost") % HTTPStatus.OK
+    assert await async_setup_component(
+        hass,
+        Platform.BINARY_SENSOR,
+        {
+            "binary_sensor": {
+                "platform": "rest",
+                "resource": "http://localhost",
+                "resource_template": "http://localhost",
+            }
+        },
+    )
+    await hass.async_block_till_done()
+    assert len(hass.states.async_all("binary_sensor")) == 0
+
+
+@respx.mock
+async def test_setup_get(hass: HomeAssistant) -> None:
+    """Test setup with valid configuration."""
+    respx.get("http://localhost").respond(status_code=HTTPStatus.OK, json={})
+    assert await async_setup_component(
+        hass,
+        "binary_sensor",
+        {
+            "binary_sensor": {
+                "platform": "rest",
+                "resource": "http://localhost",
+                "method": "GET",
+                "value_template": "{{ value_json.key }}",
+                "name": "foo",
+                "verify_ssl": "true",
+                "timeout": 30,
+                "authentication": "basic",
+                "username": "my username",
+                "password": "my password",
+                "headers": {"Accept": CONTENT_TYPE_JSON},
+                "device_class": BinarySensorDeviceClass.PLUG,
+            }
+        },
+    )
+
+    await hass.async_block_till_done()
+    assert len(hass.states.async_all("binary_sensor")) == 1
+
+    state = hass.states.get("binary_sensor.foo")
+    assert state.state == STATE_OFF
+    assert state.attributes[ATTR_DEVICE_CLASS] == BinarySensorDeviceClass.PLUG
+
+
+@respx.mock
+async def test_setup_get_template_headers_params(hass: HomeAssistant) -> None:
+    """Test setup with valid configuration."""
+    respx.get("http://localhost").respond(status_code=200, json={})
+    assert await async_setup_component(
+        hass,
+        "sensor",
+        {
+            "sensor": {
+                "platform": "rest",
+                "resource": "http://localhost",
+                "method": "GET",
+                "value_template": "{{ value_json.key }}",
+                "name": "foo",
+                "verify_ssl": "true",
+                "timeout": 30,
+                "headers": {
+                    "Accept": CONTENT_TYPE_JSON,
+                    "User-Agent": "Mozilla/{{ 3 + 2 }}.0",
+                },
+                "params": {
+                    "start": 0,
+                    "end": "{{ 3 + 2 }}",
+                },
+            }
+        },
+    )
+    await async_setup_component(hass, "homeassistant", {})
+
+    assert respx.calls.last.request.headers["Accept"] == CONTENT_TYPE_JSON
+    assert respx.calls.last.request.headers["User-Agent"] == "Mozilla/5.0"
+    assert respx.calls.last.request.url.query == b"start=0&end=5"
+
+
+@respx.mock
+async def test_setup_get_digest_auth(hass: HomeAssistant) -> None:
+    """Test setup with valid configuration."""
+    respx.get("http://localhost").respond(status_code=HTTPStatus.OK, json={})
+    assert await async_setup_component(
+        hass,
+        "binary_sensor",
+        {
+            "binary_sensor": {
+                "platform": "rest",
+                "resource": "http://localhost",
+                "method": "GET",
+                "value_template": "{{ value_json.key }}",
+                "name": "foo",
+                "verify_ssl": "true",
+                "timeout": 30,
+                "authentication": "digest",
+                "username": "my username",
+                "password": "my password",
+                "headers": {"Accept": CONTENT_TYPE_JSON},
+            }
+        },
+    )
+
+    await hass.async_block_till_done()
+    assert len(hass.states.async_all("binary_sensor")) == 1
+
+
+@respx.mock
+async def test_setup_post(hass: HomeAssistant) -> None:
+    """Test setup with valid configuration."""
+    respx.post("http://localhost").respond(status_code=HTTPStatus.OK, json={})
+    assert await async_setup_component(
+        hass,
+        "binary_sensor",
+        {
+            "binary_sensor": {
+                "platform": "rest",
+                "resource": "http://localhost",
+                "method": "POST",
+                "value_template": "{{ value_json.key }}",
+                "payload": '{ "device": "toaster"}',
+                "name": "foo",
+                "verify_ssl": "true",
+                "timeout": 30,
+                "authentication": "basic",
+                "username": "my username",
+                "password": "my password",
+                "headers": {"Accept": CONTENT_TYPE_JSON},
+            }
+        },
+    )
+    await hass.async_block_till_done()
+    assert len(hass.states.async_all("binary_sensor")) == 1
+
+
+@respx.mock
+async def test_setup_get_off(hass: HomeAssistant) -> None:
+    """Test setup with valid off configuration."""
+    respx.get("http://localhost").respond(
+        status_code=HTTPStatus.OK,
+        headers={"content-type": "text/json"},
+        json={"dog": False},
+    )
+    assert await async_setup_component(
+        hass,
+        "binary_sensor",
+        {
+            "binary_sensor": {
+                "platform": "rest",
+                "resource": "http://localhost",
+                "method": "GET",
+                "value_template": "{{ value_json.dog }}",
+                "name": "foo",
+                "verify_ssl": "true",
+                "timeout": 30,
+            }
+        },
+    )
+    await hass.async_block_till_done()
+    assert len(hass.states.async_all("binary_sensor")) == 1
+
+    state = hass.states.get("binary_sensor.foo")
+    assert state.state == STATE_OFF
+
+
+@respx.mock
+async def test_setup_get_on(hass: HomeAssistant) -> None:
+    """Test setup with valid on configuration."""
+    respx.get("http://localhost").respond(
+        status_code=HTTPStatus.OK,
+        headers={"content-type": "text/json"},
+        json={"dog": True},
+    )
+    assert await async_setup_component(
+        hass,
+        "binary_sensor",
+        {
+            "binary_sensor": {
+                "platform": "rest",
+                "resource": "http://localhost",
+                "method": "GET",
+                "value_template": "{{ value_json.dog }}",
+                "name": "foo",
+                "verify_ssl": "true",
+                "timeout": 30,
+            }
+        },
+    )
+    await hass.async_block_till_done()
+    assert len(hass.states.async_all("binary_sensor")) == 1
+
+    state = hass.states.get("binary_sensor.foo")
+    assert state.state == STATE_ON
+
+
+@respx.mock
+async def test_setup_with_exception(hass: HomeAssistant) -> None:
+    """Test setup with exception."""
+    respx.get("http://localhost").respond(status_code=HTTPStatus.OK, json={})
+    assert await async_setup_component(
+        hass,
+        "binary_sensor",
+        {
+            "binary_sensor": {
+                "platform": "rest",
+                "resource": "http://localhost",
+                "method": "GET",
+                "value_template": "{{ value_json.dog }}",
+                "name": "foo",
+                "verify_ssl": "true",
+                "timeout": 30,
+            }
+        },
+    )
+    await hass.async_block_till_done()
+    assert len(hass.states.async_all("binary_sensor")) == 1
+
+    state = hass.states.get("binary_sensor.foo")
+    assert state.state == STATE_OFF
+
+    await async_setup_component(hass, "homeassistant", {})
+    await hass.async_block_till_done()
+
+    respx.clear()
+    respx.get("http://localhost").mock(side_effect=httpx.RequestError)
+    await hass.services.async_call(
+        "homeassistant",
+        "update_entity",
+        {ATTR_ENTITY_ID: ["binary_sensor.foo"]},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+
+    state = hass.states.get("binary_sensor.foo")
+    assert state.state == STATE_UNAVAILABLE
+
+
+@respx.mock
+async def test_reload(hass: HomeAssistant) -> None:
+    """Verify we can reload reset sensors."""
+
+    respx.get("http://localhost") % HTTPStatus.OK
+
+    await async_setup_component(
+        hass,
+        "binary_sensor",
+        {
+            "binary_sensor": {
+                "platform": "rest",
+                "method": "GET",
+                "name": "mockrest",
+                "resource": "http://localhost",
+            }
+        },
+    )
+    await hass.async_block_till_done()
+    await hass.async_start()
+    await hass.async_block_till_done()
+
+    assert len(hass.states.async_all("binary_sensor")) == 1
+
+    assert hass.states.get("binary_sensor.mockrest")
+
+    yaml_path = get_fixture_path("configuration.yaml", "rest")
+    with patch.object(hass_config, "YAML_CONFIG_FILE", yaml_path):
+        await hass.services.async_call(
+            "rest",
+            SERVICE_RELOAD,
+            {},
+            blocking=True,
+        )
+        await hass.async_block_till_done()
+
+    assert hass.states.get("binary_sensor.mockreset") is None
+    assert hass.states.get("binary_sensor.rollout")
+
+
+@respx.mock
+async def test_setup_query_params(hass: HomeAssistant) -> None:
+    """Test setup with query params."""
+    respx.get("http://localhost", params={"search": "something"}) % HTTPStatus.OK
+    assert await async_setup_component(
+        hass,
+        Platform.BINARY_SENSOR,
+        {
+            "binary_sensor": {
+                "platform": "rest",
+                "resource": "http://localhost",
+                "method": "GET",
+                "params": {"search": "something"},
+            }
+        },
+    )
+    await hass.async_block_till_done()
+    assert len(hass.states.async_all("binary_sensor")) == 1
+
+
+@respx.mock
+async def test_entity_config(hass: HomeAssistant) -> None:
+    """Test entity configuration."""
+
+    config = {
+        Platform.BINARY_SENSOR: {
+            # REST configuration
+            "platform": "rest",
+            "method": "GET",
+            "resource": "http://localhost",
+            # Entity configuration
+            "icon": "{{'mdi:one_two_three'}}",
+            "picture": "{{'blabla.png'}}",
+            "name": "{{'REST' + ' ' + 'Binary Sensor'}}",
+            "unique_id": "very_unique",
+        },
+    }
+
+    respx.get("http://localhost") % HTTPStatus.OK
+    assert await async_setup_component(hass, Platform.BINARY_SENSOR, config)
+    await hass.async_block_till_done()
+
+    entity_registry = er.async_get(hass)
+    assert (
+        entity_registry.async_get("binary_sensor.rest_binary_sensor").unique_id
+        == "very_unique"
+    )
+
+    state = hass.states.get("binary_sensor.rest_binary_sensor")
+    assert state.state == "off"
+    assert state.attributes == {
+        "entity_picture": "blabla.png",
+        "friendly_name": "REST Binary Sensor",
+        "icon": "mdi:one_two_three",
+    }

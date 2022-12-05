@@ -1,50 +1,71 @@
 """Support for monitoring the state of Digital Ocean droplets."""
+from __future__ import annotations
+
 import logging
 
 import voluptuous as vol
 
 from homeassistant.components.binary_sensor import (
-    PLATFORM_SCHEMA, BinarySensorDevice)
-from homeassistant.const import ATTR_ATTRIBUTION
+    PLATFORM_SCHEMA,
+    BinarySensorDeviceClass,
+    BinarySensorEntity,
+)
+from homeassistant.core import HomeAssistant
 import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
 from . import (
-    ATTR_CREATED_AT, ATTR_DROPLET_ID, ATTR_DROPLET_NAME, ATTR_FEATURES,
-    ATTR_IPV4_ADDRESS, ATTR_IPV6_ADDRESS, ATTR_MEMORY, ATTR_REGION, ATTR_VCPUS,
-    ATTRIBUTION, CONF_DROPLETS, DATA_DIGITAL_OCEAN)
+    ATTR_CREATED_AT,
+    ATTR_DROPLET_ID,
+    ATTR_DROPLET_NAME,
+    ATTR_FEATURES,
+    ATTR_IPV4_ADDRESS,
+    ATTR_IPV6_ADDRESS,
+    ATTR_MEMORY,
+    ATTR_REGION,
+    ATTR_VCPUS,
+    ATTRIBUTION,
+    CONF_DROPLETS,
+    DATA_DIGITAL_OCEAN,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
-DEFAULT_NAME = 'Droplet'
-DEFAULT_DEVICE_CLASS = 'moving'
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
-    vol.Required(CONF_DROPLETS): vol.All(cv.ensure_list, [cv.string]),
-})
+DEFAULT_NAME = "Droplet"
+PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
+    {vol.Required(CONF_DROPLETS): vol.All(cv.ensure_list, [cv.string])}
+)
 
 
-def setup_platform(hass, config, add_entities, discovery_info=None):
+def setup_platform(
+    hass: HomeAssistant,
+    config: ConfigType,
+    add_entities: AddEntitiesCallback,
+    discovery_info: DiscoveryInfoType | None = None,
+) -> None:
     """Set up the Digital Ocean droplet sensor."""
-    digital = hass.data.get(DATA_DIGITAL_OCEAN)
-    if not digital:
-        return False
+    if not (digital := hass.data.get(DATA_DIGITAL_OCEAN)):
+        return
 
-    droplets = config.get(CONF_DROPLETS)
+    droplets = config[CONF_DROPLETS]
 
     dev = []
     for droplet in droplets:
-        droplet_id = digital.get_droplet_id(droplet)
-        if droplet_id is None:
+        if (droplet_id := digital.get_droplet_id(droplet)) is None:
             _LOGGER.error("Droplet %s is not available", droplet)
-            return False
+            return
         dev.append(DigitalOceanBinarySensor(digital, droplet_id))
 
     add_entities(dev, True)
 
 
-class DigitalOceanBinarySensor(BinarySensorDevice):
+class DigitalOceanBinarySensor(BinarySensorEntity):
     """Representation of a Digital Ocean droplet sensor."""
 
-    def __init__(self, do, droplet_id):
+    _attr_attribution = ATTRIBUTION
+
+    def __init__(self, do, droplet_id):  # pylint: disable=invalid-name
         """Initialize a new Digital Ocean sensor."""
         self._digital_ocean = do
         self._droplet_id = droplet_id
@@ -59,18 +80,17 @@ class DigitalOceanBinarySensor(BinarySensorDevice):
     @property
     def is_on(self):
         """Return true if the binary sensor is on."""
-        return self.data.status == 'active'
+        return self.data.status == "active"
 
     @property
     def device_class(self):
         """Return the class of this sensor."""
-        return DEFAULT_DEVICE_CLASS
+        return BinarySensorDeviceClass.MOVING
 
     @property
-    def device_state_attributes(self):
+    def extra_state_attributes(self):
         """Return the state attributes of the Digital Ocean droplet."""
         return {
-            ATTR_ATTRIBUTION: ATTRIBUTION,
             ATTR_CREATED_AT: self.data.created_at,
             ATTR_DROPLET_ID: self.data.id,
             ATTR_DROPLET_NAME: self.data.name,
@@ -78,11 +98,11 @@ class DigitalOceanBinarySensor(BinarySensorDevice):
             ATTR_IPV4_ADDRESS: self.data.ip_address,
             ATTR_IPV6_ADDRESS: self.data.ip_v6_address,
             ATTR_MEMORY: self.data.memory,
-            ATTR_REGION: self.data.region['name'],
+            ATTR_REGION: self.data.region["name"],
             ATTR_VCPUS: self.data.vcpus,
         }
 
-    def update(self):
+    def update(self) -> None:
         """Update state of sensor."""
         self._digital_ocean.update()
 

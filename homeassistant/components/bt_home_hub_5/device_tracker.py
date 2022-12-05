@@ -1,23 +1,33 @@
 """Support for BT Home Hub 5."""
+from __future__ import annotations
+
 import logging
 
+import bthomehub5_devicelist
 import voluptuous as vol
 
-import homeassistant.helpers.config_validation as cv
-from homeassistant.components.device_tracker import (DOMAIN, PLATFORM_SCHEMA,
-                                                     DeviceScanner)
+from homeassistant.components.device_tracker import (
+    DOMAIN,
+    PLATFORM_SCHEMA as PARENT_PLATFORM_SCHEMA,
+    DeviceScanner,
+)
 from homeassistant.const import CONF_HOST
+from homeassistant.core import HomeAssistant
+import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers.typing import ConfigType
 
 _LOGGER = logging.getLogger(__name__)
 
-CONF_DEFAULT_IP = '192.168.1.254'
+CONF_DEFAULT_IP = "192.168.1.254"
 
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
-    vol.Optional(CONF_HOST, default=CONF_DEFAULT_IP): cv.string,
-})
+PLATFORM_SCHEMA = PARENT_PLATFORM_SCHEMA.extend(
+    {vol.Optional(CONF_HOST, default=CONF_DEFAULT_IP): cv.string}
+)
 
 
-def get_scanner(hass, config):
+def get_scanner(
+    hass: HomeAssistant, config: ConfigType
+) -> BTHomeHub5DeviceScanner | None:
     """Return a BT Home Hub 5 scanner if successful."""
     scanner = BTHomeHub5DeviceScanner(config[DOMAIN])
 
@@ -29,7 +39,6 @@ class BTHomeHub5DeviceScanner(DeviceScanner):
 
     def __init__(self, config):
         """Initialise the scanner."""
-        import bthomehub5_devicelist
 
         _LOGGER.info("Initialising BT Home Hub 5")
         self.host = config[CONF_HOST]
@@ -58,7 +67,6 @@ class BTHomeHub5DeviceScanner(DeviceScanner):
 
     def update_info(self):
         """Ensure the information from the BT Home Hub 5 is up to date."""
-        import bthomehub5_devicelist
 
         _LOGGER.info("Scanning")
 

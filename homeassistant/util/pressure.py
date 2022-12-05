@@ -1,51 +1,34 @@
 """Pressure util functions."""
+from __future__ import annotations
 
-import logging
-from numbers import Number
-
-from homeassistant.const import (
-    PRESSURE_PA,
+from homeassistant.const import (  # pylint: disable=unused-import # noqa: F401
+    PRESSURE,
+    PRESSURE_BAR,
+    PRESSURE_CBAR,
     PRESSURE_HPA,
-    PRESSURE_MBAR,
     PRESSURE_INHG,
+    PRESSURE_KPA,
+    PRESSURE_MBAR,
+    PRESSURE_MMHG,
+    PRESSURE_PA,
     PRESSURE_PSI,
     UNIT_NOT_RECOGNIZED_TEMPLATE,
-    PRESSURE,
 )
+from homeassistant.helpers.frame import report
 
-_LOGGER = logging.getLogger(__name__)
+from .unit_conversion import PressureConverter
 
-VALID_UNITS = [
-    PRESSURE_PA,
-    PRESSURE_HPA,
-    PRESSURE_MBAR,
-    PRESSURE_INHG,
-    PRESSURE_PSI,
-]
-
-UNIT_CONVERSION = {
-    PRESSURE_PA: 1,
-    PRESSURE_HPA: 1 / 100,
-    PRESSURE_MBAR: 1 / 100,
-    PRESSURE_INHG: 1 / 3386.389,
-    PRESSURE_PSI: 1 / 6894.757,
-}
+# pylint: disable-next=protected-access
+UNIT_CONVERSION: dict[str, float] = PressureConverter._UNIT_CONVERSION
+VALID_UNITS = PressureConverter.VALID_UNITS
 
 
-def convert(value: float, unit_1: str, unit_2: str) -> float:
+def convert(value: float, from_unit: str, to_unit: str) -> float:
     """Convert one unit of measurement to another."""
-    if unit_1 not in VALID_UNITS:
-        raise ValueError(
-            UNIT_NOT_RECOGNIZED_TEMPLATE.format(unit_1, PRESSURE))
-    if unit_2 not in VALID_UNITS:
-        raise ValueError(
-            UNIT_NOT_RECOGNIZED_TEMPLATE.format(unit_2, PRESSURE))
-
-    if not isinstance(value, Number):
-        raise TypeError('{} is not of numeric type'.format(value))
-
-    if unit_1 == unit_2 or unit_1 not in VALID_UNITS:
-        return value
-
-    pascals = value / UNIT_CONVERSION[unit_1]
-    return pascals * UNIT_CONVERSION[unit_2]
+    report(
+        "uses pressure utility. This is deprecated since 2022.10 and will "
+        "stop working in Home Assistant 2023.4, it should be updated to use "
+        "unit_conversion.PressureConverter instead",
+        error_if_core=False,
+    )
+    return PressureConverter.convert(value, from_unit, to_unit)

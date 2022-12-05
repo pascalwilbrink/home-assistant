@@ -1,4 +1,2 @@
-"""Tests for Hassio component."""
-
-API_PASSWORD = 'pass1234'
-HASSIO_TOKEN = '123456'
+"""Tests for Hass.io component."""
+SUPERVISOR_TOKEN = "123456"

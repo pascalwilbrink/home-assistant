@@ -1,51 +1,50 @@
 """The tests for the Dark Sky weather component."""
 import re
-import unittest
 from unittest.mock import patch
 
 import forecastio
-import requests_mock
+from requests.exceptions import ConnectionError as ConnectError
 
 from homeassistant.components import weather
-from homeassistant.util.unit_system import METRIC_SYSTEM
-from homeassistant.setup import setup_component
+from homeassistant.setup import async_setup_component
 
-from tests.common import load_fixture, get_test_home_assistant
+from tests.common import load_fixture
 
 
-class TestDarkSky(unittest.TestCase):
-    """Test the Dark Sky weather component."""
+async def test_setup(hass, requests_mock):
+    """Test for successfully setting up the forecast.io platform."""
+    with patch(
+        "forecastio.api.get_forecast", wraps=forecastio.api.get_forecast
+    ) as mock_get_forecast:
+        requests_mock.get(
+            re.compile(
+                r"https://api.(darksky.net|forecast.io)\/forecast\/(\w+)\/"
+                r"(-?\d+\.?\d*),(-?\d+\.?\d*)"
+            ),
+            text=load_fixture("darksky.json"),
+        )
 
-    def setUp(self):
-        """Set up things to be run when tests are started."""
-        self.hass = get_test_home_assistant()
-        self.hass.config.units = METRIC_SYSTEM
-        self.lat = self.hass.config.latitude = 37.8267
-        self.lon = self.hass.config.longitude = -122.423
+        assert await async_setup_component(
+            hass,
+            weather.DOMAIN,
+            {"weather": {"name": "test", "platform": "darksky", "api_key": "foo"}},
+        )
+        await hass.async_block_till_done()
 
-    def tearDown(self):
-        """Stop down everything that was started."""
-        self.hass.stop()
-
-    @requests_mock.Mocker()
-    @patch('forecastio.api.get_forecast', wraps=forecastio.api.get_forecast)
-    def test_setup(self, mock_req, mock_get_forecast):
-        """Test for successfully setting up the forecast.io platform."""
-        uri = (r'https://api.(darksky.net|forecast.io)\/forecast\/(\w+)\/'
-               r'(-?\d+\.?\d*),(-?\d+\.?\d*)')
-        mock_req.get(re.compile(uri),
-                     text=load_fixture('darksky.json'))
-
-        assert setup_component(self.hass, weather.DOMAIN, {
-            'weather': {
-                'name': 'test',
-                'platform': 'darksky',
-                'api_key': 'foo',
-            }
-        })
-
-        assert mock_get_forecast.called
         assert mock_get_forecast.call_count == 1
+        state = hass.states.get("weather.test")
+        assert state.state == "sunny"
 
-        state = self.hass.states.get('weather.test')
-        assert state.state == 'sunny'
+
+async def test_failed_setup(hass):
+    """Test to ensure that a network error does not break component state."""
+    with patch("forecastio.load_forecast", side_effect=ConnectError()):
+        assert await async_setup_component(
+            hass,
+            weather.DOMAIN,
+            {"weather": {"name": "test", "platform": "darksky", "api_key": "foo"}},
+        )
+        await hass.async_block_till_done()
+
+        state = hass.states.get("weather.test")
+        assert state.state == "unavailable"

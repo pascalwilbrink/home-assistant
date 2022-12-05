@@ -1,15 +1,23 @@
 """Support for Homematic locks."""
-import logging
+from __future__ import annotations
 
-from homeassistant.components.lock import SUPPORT_OPEN, LockDevice
-from homeassistant.const import STATE_UNKNOWN
+from typing import Any
 
-from . import ATTR_DISCOVER_DEVICES, HMDevice
+from homeassistant.components.lock import LockEntity, LockEntityFeature
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
-_LOGGER = logging.getLogger(__name__)
+from .const import ATTR_DISCOVER_DEVICES
+from .entity import HMDevice
 
 
-def setup_platform(hass, config, add_entities, discovery_info=None):
+def setup_platform(
+    hass: HomeAssistant,
+    config: ConfigType,
+    add_entities: AddEntitiesCallback,
+    discovery_info: DiscoveryInfoType | None = None,
+) -> None:
     """Set up the Homematic lock platform."""
     if discovery_info is None:
         return
@@ -18,35 +26,32 @@ def setup_platform(hass, config, add_entities, discovery_info=None):
     for conf in discovery_info[ATTR_DISCOVER_DEVICES]:
         devices.append(HMLock(conf))
 
-    add_entities(devices)
+    add_entities(devices, True)
 
 
-class HMLock(HMDevice, LockDevice):
+class HMLock(HMDevice, LockEntity):
     """Representation of a Homematic lock aka KeyMatic."""
 
+    _attr_supported_features = LockEntityFeature.OPEN
+
     @property
-    def is_locked(self):
+    def is_locked(self) -> bool:
         """Return true if the lock is locked."""
         return not bool(self._hm_get_state())
 
-    def lock(self, **kwargs):
+    def lock(self, **kwargs: Any) -> None:
         """Lock the lock."""
         self._hmdevice.lock()
 
-    def unlock(self, **kwargs):
+    def unlock(self, **kwargs: Any) -> None:
         """Unlock the lock."""
         self._hmdevice.unlock()
 
-    def open(self, **kwargs):
+    def open(self, **kwargs: Any) -> None:
         """Open the door latch."""
         self._hmdevice.open()
 
     def _init_data_struct(self):
         """Generate the data dictionary (self._data) from metadata."""
         self._state = "STATE"
-        self._data.update({self._state: STATE_UNKNOWN})
-
-    @property
-    def supported_features(self):
-        """Flag supported features."""
-        return SUPPORT_OPEN
+        self._data.update({self._state: None})

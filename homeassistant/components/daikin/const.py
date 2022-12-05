@@ -1,24 +1,28 @@
 """Constants for Daikin."""
-from homeassistant.const import CONF_ICON, CONF_NAME, CONF_TYPE
+DOMAIN = "daikin"
 
-ATTR_TARGET_TEMPERATURE = 'target_temperature'
-ATTR_INSIDE_TEMPERATURE = 'inside_temperature'
-ATTR_OUTSIDE_TEMPERATURE = 'outside_temperature'
+ATTR_TARGET_TEMPERATURE = "target_temperature"
+ATTR_INSIDE_TEMPERATURE = "inside_temperature"
+ATTR_OUTSIDE_TEMPERATURE = "outside_temperature"
 
-SENSOR_TYPE_TEMPERATURE = 'temperature'
+ATTR_TARGET_HUMIDITY = "target_humidity"
+ATTR_HUMIDITY = "humidity"
 
-SENSOR_TYPES = {
-    ATTR_INSIDE_TEMPERATURE: {
-        CONF_NAME: 'Inside Temperature',
-        CONF_ICON: 'mdi:thermometer',
-        CONF_TYPE: SENSOR_TYPE_TEMPERATURE
-    },
-    ATTR_OUTSIDE_TEMPERATURE: {
-        CONF_NAME: 'Outside Temperature',
-        CONF_ICON: 'mdi:thermometer',
-        CONF_TYPE: SENSOR_TYPE_TEMPERATURE
-    }
-}
+ATTR_COMPRESSOR_FREQUENCY = "compressor_frequency"
 
-KEY_MAC = 'mac'
-KEY_IP = 'ip'
+ATTR_ENERGY_TODAY = "energy_today"
+ATTR_COOL_ENERGY = "cool_energy"
+ATTR_HEAT_ENERGY = "heat_energy"
+
+ATTR_TOTAL_POWER = "total_power"
+ATTR_TOTAL_ENERGY_TODAY = "total_energy_today"
+
+ATTR_STATE_ON = "on"
+ATTR_STATE_OFF = "off"
+
+CONF_UUID = "uuid"
+
+KEY_MAC = "mac"
+KEY_IP = "ip"
+
+TIMEOUT = 60

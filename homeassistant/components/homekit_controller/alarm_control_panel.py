@@ -1,16 +1,33 @@
 """Support for Homekit Alarm Control Panel."""
-import logging
+from __future__ import annotations
 
-from homeassistant.components.alarm_control_panel import AlarmControlPanel
+from typing import Any
+
+from aiohomekit.model.characteristics import CharacteristicsTypes
+from aiohomekit.model.services import Service, ServicesTypes
+
+from homeassistant.components.alarm_control_panel import (
+    AlarmControlPanelEntity,
+    AlarmControlPanelEntityFeature,
+)
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
-    ATTR_BATTERY_LEVEL, STATE_ALARM_ARMED_AWAY, STATE_ALARM_ARMED_HOME,
-    STATE_ALARM_ARMED_NIGHT, STATE_ALARM_DISARMED, STATE_ALARM_TRIGGERED)
+    ATTR_BATTERY_LEVEL,
+    STATE_ALARM_ARMED_AWAY,
+    STATE_ALARM_ARMED_HOME,
+    STATE_ALARM_ARMED_NIGHT,
+    STATE_ALARM_DISARMED,
+    STATE_ALARM_TRIGGERED,
+    Platform,
+)
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from . import KNOWN_DEVICES, HomeKitEntity
+from . import KNOWN_DEVICES
+from .connection import HKDevice
+from .entity import HomeKitEntity
 
-ICON = 'mdi:security'
-
-_LOGGER = logging.getLogger(__name__)
+ICON = "mdi:security"
 
 CURRENT_STATE_MAP = {
     0: STATE_ALARM_ARMED_HOME,
@@ -28,91 +45,86 @@ TARGET_STATE_MAP = {
 }
 
 
-async def async_setup_platform(
-        hass, config, async_add_entities, discovery_info=None):
-    """Legacy set up platform."""
-    pass
-
-
-async def async_setup_entry(hass, config_entry, async_add_entities):
+async def async_setup_entry(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
     """Set up Homekit alarm control panel."""
-    hkid = config_entry.data['AccessoryPairingID']
-    conn = hass.data[KNOWN_DEVICES][hkid]
+    hkid: str = config_entry.data["AccessoryPairingID"]
+    conn: HKDevice = hass.data[KNOWN_DEVICES][hkid]
 
-    def async_add_service(aid, service):
-        if service['stype'] != 'security-system':
+    @callback
+    def async_add_service(service: Service) -> bool:
+        if service.type != ServicesTypes.SECURITY_SYSTEM:
             return False
-        info = {'aid': aid, 'iid': service['iid']}
-        async_add_entities([HomeKitAlarmControlPanel(conn, info)], True)
+        info = {"aid": service.accessory.aid, "iid": service.iid}
+        entity = HomeKitAlarmControlPanelEntity(conn, info)
+        conn.async_migrate_unique_id(
+            entity.old_unique_id, entity.unique_id, Platform.ALARM_CONTROL_PANEL
+        )
+        async_add_entities([entity])
         return True
 
     conn.add_listener(async_add_service)
 
 
-class HomeKitAlarmControlPanel(HomeKitEntity, AlarmControlPanel):
+class HomeKitAlarmControlPanelEntity(HomeKitEntity, AlarmControlPanelEntity):
     """Representation of a Homekit Alarm Control Panel."""
 
-    def __init__(self, *args):
-        """Initialise the Alarm Control Panel."""
-        super().__init__(*args)
-        self._state = None
-        self._battery_level = None
+    _attr_supported_features = (
+        AlarmControlPanelEntityFeature.ARM_HOME
+        | AlarmControlPanelEntityFeature.ARM_AWAY
+        | AlarmControlPanelEntityFeature.ARM_NIGHT
+    )
 
-    def get_characteristic_types(self):
+    def get_characteristic_types(self) -> list[str]:
         """Define the homekit characteristics the entity cares about."""
-        # pylint: disable=import-error
-        from homekit.model.characteristics import CharacteristicsTypes
         return [
             CharacteristicsTypes.SECURITY_SYSTEM_STATE_CURRENT,
             CharacteristicsTypes.SECURITY_SYSTEM_STATE_TARGET,
             CharacteristicsTypes.BATTERY_LEVEL,
         ]
 
-    def _update_security_system_state_current(self, value):
-        self._state = CURRENT_STATE_MAP[value]
-
-    def _update_battery_level(self, value):
-        self._battery_level = value
-
     @property
-    def icon(self):
+    def icon(self) -> str:
         """Return icon."""
         return ICON
 
     @property
-    def state(self):
+    def state(self) -> str:
         """Return the state of the device."""
-        return self._state
+        return CURRENT_STATE_MAP[
+            self.service.value(CharacteristicsTypes.SECURITY_SYSTEM_STATE_CURRENT)
+        ]
 
-    async def async_alarm_disarm(self, code=None):
+    async def async_alarm_disarm(self, code: str | None = None) -> None:
         """Send disarm command."""
         await self.set_alarm_state(STATE_ALARM_DISARMED, code)
 
-    async def async_alarm_arm_away(self, code=None):
+    async def async_alarm_arm_away(self, code: str | None = None) -> None:
         """Send arm command."""
         await self.set_alarm_state(STATE_ALARM_ARMED_AWAY, code)
 
-    async def async_alarm_arm_home(self, code=None):
+    async def async_alarm_arm_home(self, code: str | None = None) -> None:
         """Send stay command."""
         await self.set_alarm_state(STATE_ALARM_ARMED_HOME, code)
 
-    async def async_alarm_arm_night(self, code=None):
+    async def async_alarm_arm_night(self, code: str | None = None) -> None:
         """Send night command."""
         await self.set_alarm_state(STATE_ALARM_ARMED_NIGHT, code)
 
-    async def set_alarm_state(self, state, code=None):
+    async def set_alarm_state(self, state: str, code: str | None = None) -> None:
         """Send state command."""
-        characteristics = [{'aid': self._aid,
-                            'iid': self._chars['security-system-state.target'],
-                            'value': TARGET_STATE_MAP[state]}]
-        await self._accessory.put_characteristics(characteristics)
+        await self.async_put_characteristics(
+            {CharacteristicsTypes.SECURITY_SYSTEM_STATE_TARGET: TARGET_STATE_MAP[state]}
+        )
 
     @property
-    def device_state_attributes(self):
+    def extra_state_attributes(self) -> dict[str, Any] | None:
         """Return the optional state attributes."""
-        if self._battery_level is None:
-            return None
+        battery_level = self.service.value(CharacteristicsTypes.BATTERY_LEVEL)
 
-        return {
-            ATTR_BATTERY_LEVEL: self._battery_level,
-        }
+        if not battery_level:
+            return {}
+        return {ATTR_BATTERY_LEVEL: battery_level}

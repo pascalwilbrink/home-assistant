@@ -1,48 +1,57 @@
 """Support for openSenseMap Air Quality data."""
+from __future__ import annotations
+
 from datetime import timedelta
 import logging
 
+from opensensemap_api import OpenSenseMap
+from opensensemap_api.exceptions import OpenSenseMapError
 import voluptuous as vol
 
-from homeassistant.components.air_quality import (
-    PLATFORM_SCHEMA, AirQualityEntity)
+from homeassistant.components.air_quality import PLATFORM_SCHEMA, AirQualityEntity
 from homeassistant.const import CONF_NAME
+from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import PlatformNotReady
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 from homeassistant.util import Throttle
 
 _LOGGER = logging.getLogger(__name__)
 
-ATTRIBUTION = 'Data provided by openSenseMap'
+ATTRIBUTION = "Data provided by openSenseMap"
 
-CONF_STATION_ID = 'station_id'
+CONF_STATION_ID = "station_id"
 
 SCAN_INTERVAL = timedelta(minutes=10)
 
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
-    vol.Required(CONF_STATION_ID): cv.string,
-    vol.Optional(CONF_NAME): cv.string,
-})
+PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
+    {vol.Required(CONF_STATION_ID): cv.string, vol.Optional(CONF_NAME): cv.string}
+)
 
 
 async def async_setup_platform(
-        hass, config, async_add_entities, discovery_info=None):
+    hass: HomeAssistant,
+    config: ConfigType,
+    async_add_entities: AddEntitiesCallback,
+    discovery_info: DiscoveryInfoType | None = None,
+) -> None:
     """Set up the openSenseMap air quality platform."""
-    from opensensemap_api import OpenSenseMap
 
     name = config.get(CONF_NAME)
     station_id = config[CONF_STATION_ID]
 
     session = async_get_clientsession(hass)
-    osm_api = OpenSenseMapData(OpenSenseMap(station_id, hass.loop, session))
+    osm_api = OpenSenseMapData(OpenSenseMap(station_id, session))
 
     await osm_api.async_update()
 
-    if 'name' not in osm_api.api.data:
+    if "name" not in osm_api.api.data:
         _LOGGER.error("Station %s is not available", station_id)
-        return
+        raise PlatformNotReady
 
-    station_name = osm_api.api.data['name'] if name is None else name
+    station_name = osm_api.api.data["name"] if name is None else name
 
     async_add_entities([OpenSenseMapQuality(station_name, osm_api)], True)
 
@@ -90,7 +99,6 @@ class OpenSenseMapData:
     @Throttle(SCAN_INTERVAL)
     async def async_update(self):
         """Get the latest data from the Pi-hole."""
-        from opensensemap_api.exceptions import OpenSenseMapError
 
         try:
             await self.api.get_data()

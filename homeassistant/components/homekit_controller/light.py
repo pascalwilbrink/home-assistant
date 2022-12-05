@@ -1,52 +1,57 @@
 """Support for Homekit lights."""
-import logging
+from __future__ import annotations
+
+from typing import Any
+
+from aiohomekit.model.characteristics import CharacteristicsTypes
+from aiohomekit.model.services import Service, ServicesTypes
 
 from homeassistant.components.light import (
-    ATTR_BRIGHTNESS, ATTR_COLOR_TEMP, ATTR_HS_COLOR, SUPPORT_BRIGHTNESS,
-    SUPPORT_COLOR, SUPPORT_COLOR_TEMP, Light)
+    ATTR_BRIGHTNESS,
+    ATTR_COLOR_TEMP,
+    ATTR_HS_COLOR,
+    ColorMode,
+    LightEntity,
+)
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import Platform
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from . import KNOWN_DEVICES, HomeKitEntity
-
-_LOGGER = logging.getLogger(__name__)
-
-
-async def async_setup_platform(
-        hass, config, async_add_entities, discovery_info=None):
-    """Legacy set up platform."""
-    pass
+from . import KNOWN_DEVICES
+from .connection import HKDevice
+from .entity import HomeKitEntity
 
 
-async def async_setup_entry(hass, config_entry, async_add_entities):
+async def async_setup_entry(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
     """Set up Homekit lightbulb."""
-    hkid = config_entry.data['AccessoryPairingID']
-    conn = hass.data[KNOWN_DEVICES][hkid]
+    hkid: str = config_entry.data["AccessoryPairingID"]
+    conn: HKDevice = hass.data[KNOWN_DEVICES][hkid]
 
-    def async_add_service(aid, service):
-        if service['stype'] != 'lightbulb':
+    @callback
+    def async_add_service(service: Service) -> bool:
+        if service.type != ServicesTypes.LIGHTBULB:
             return False
-        info = {'aid': aid, 'iid': service['iid']}
-        async_add_entities([HomeKitLight(conn, info)], True)
+        info = {"aid": service.accessory.aid, "iid": service.iid}
+        entity = HomeKitLight(conn, info)
+        conn.async_migrate_unique_id(
+            entity.old_unique_id, entity.unique_id, Platform.LIGHT
+        )
+        async_add_entities([entity])
         return True
 
     conn.add_listener(async_add_service)
 
 
-class HomeKitLight(HomeKitEntity, Light):
+class HomeKitLight(HomeKitEntity, LightEntity):
     """Representation of a Homekit light."""
 
-    def __init__(self, *args):
-        """Initialise the light."""
-        super().__init__(*args)
-        self._on = False
-        self._brightness = 0
-        self._color_temperature = 0
-        self._hue = 0
-        self._saturation = 0
-
-    def get_characteristic_types(self):
+    def get_characteristic_types(self) -> list[str]:
         """Define the homekit characteristics the entity cares about."""
-        # pylint: disable=import-error
-        from homekit.model.characteristics import CharacteristicsTypes
         return [
             CharacteristicsTypes.ON,
             CharacteristicsTypes.BRIGHTNESS,
@@ -55,89 +60,108 @@ class HomeKitLight(HomeKitEntity, Light):
             CharacteristicsTypes.SATURATION,
         ]
 
-    def _setup_brightness(self, char):
-        self._features |= SUPPORT_BRIGHTNESS
-
-    def _setup_color_temperature(self, char):
-        self._features |= SUPPORT_COLOR_TEMP
-
-    def _setup_hue(self, char):
-        self._features |= SUPPORT_COLOR
-
-    def _setup_saturation(self, char):
-        self._features |= SUPPORT_COLOR
-
-    def _update_on(self, value):
-        self._on = value
-
-    def _update_brightness(self, value):
-        self._brightness = value
-
-    def _update_color_temperature(self, value):
-        self._color_temperature = value
-
-    def _update_hue(self, value):
-        self._hue = value
-
-    def _update_saturation(self, value):
-        self._saturation = value
-
     @property
-    def is_on(self):
+    def is_on(self) -> bool:
         """Return true if device is on."""
-        return self._on
+        return self.service.value(CharacteristicsTypes.ON)
 
     @property
-    def brightness(self):
+    def brightness(self) -> int:
         """Return the brightness of this light between 0..255."""
-        return self._brightness * 255 / 100
+        return self.service.value(CharacteristicsTypes.BRIGHTNESS) * 255 / 100
 
     @property
-    def hs_color(self):
+    def hs_color(self) -> tuple[float, float]:
         """Return the color property."""
-        return (self._hue, self._saturation)
+        return (
+            self.service.value(CharacteristicsTypes.HUE),
+            self.service.value(CharacteristicsTypes.SATURATION),
+        )
 
     @property
-    def color_temp(self):
+    def min_mireds(self) -> int:
+        """Return minimum supported color temperature."""
+        min_value = self.service[CharacteristicsTypes.COLOR_TEMPERATURE].minValue
+        return int(min_value) if min_value else super().min_mireds
+
+    @property
+    def max_mireds(self) -> int:
+        """Return the maximum color temperature."""
+        max_value = self.service[CharacteristicsTypes.COLOR_TEMPERATURE].maxValue
+        return int(max_value) if max_value else super().max_mireds
+
+    @property
+    def color_temp(self) -> int:
         """Return the color temperature."""
-        return self._color_temperature
+        return self.service.value(CharacteristicsTypes.COLOR_TEMPERATURE)
 
     @property
-    def supported_features(self):
-        """Flag supported features."""
-        return self._features
+    def color_mode(self) -> str:
+        """Return the color mode of the light."""
+        # aiohomekit does not keep track of the light's color mode, report
+        # hs for light supporting both hs and ct
+        if self.service.has(CharacteristicsTypes.HUE) or self.service.has(
+            CharacteristicsTypes.SATURATION
+        ):
+            return ColorMode.HS
 
-    async def async_turn_on(self, **kwargs):
+        if self.service.has(CharacteristicsTypes.COLOR_TEMPERATURE):
+            return ColorMode.COLOR_TEMP
+
+        if self.service.has(CharacteristicsTypes.BRIGHTNESS):
+            return ColorMode.BRIGHTNESS
+
+        return ColorMode.ONOFF
+
+    @property
+    def supported_color_modes(self) -> set[ColorMode]:
+        """Flag supported color modes."""
+        color_modes: set[ColorMode] = set()
+
+        if self.service.has(CharacteristicsTypes.HUE) or self.service.has(
+            CharacteristicsTypes.SATURATION
+        ):
+            color_modes.add(ColorMode.HS)
+
+        if self.service.has(CharacteristicsTypes.COLOR_TEMPERATURE):
+            color_modes.add(ColorMode.COLOR_TEMP)
+
+        if not color_modes and self.service.has(CharacteristicsTypes.BRIGHTNESS):
+            color_modes.add(ColorMode.BRIGHTNESS)
+
+        if not color_modes:
+            color_modes.add(ColorMode.ONOFF)
+
+        return color_modes
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the specified light on."""
         hs_color = kwargs.get(ATTR_HS_COLOR)
         temperature = kwargs.get(ATTR_COLOR_TEMP)
         brightness = kwargs.get(ATTR_BRIGHTNESS)
 
-        characteristics = []
+        characteristics = {}
+
         if hs_color is not None:
-            characteristics.append({'aid': self._aid,
-                                    'iid': self._chars['hue'],
-                                    'value': hs_color[0]})
-            characteristics.append({'aid': self._aid,
-                                    'iid': self._chars['saturation'],
-                                    'value': hs_color[1]})
+            characteristics.update(
+                {
+                    CharacteristicsTypes.HUE: hs_color[0],
+                    CharacteristicsTypes.SATURATION: hs_color[1],
+                }
+            )
+
         if brightness is not None:
-            characteristics.append({'aid': self._aid,
-                                    'iid': self._chars['brightness'],
-                                    'value': int(brightness * 100 / 255)})
+            characteristics[CharacteristicsTypes.BRIGHTNESS] = int(
+                brightness * 100 / 255
+            )
 
         if temperature is not None:
-            characteristics.append({'aid': self._aid,
-                                    'iid': self._chars['color-temperature'],
-                                    'value': int(temperature)})
-        characteristics.append({'aid': self._aid,
-                                'iid': self._chars['on'],
-                                'value': True})
-        await self._accessory.put_characteristics(characteristics)
+            characteristics[CharacteristicsTypes.COLOR_TEMPERATURE] = int(temperature)
 
-    async def async_turn_off(self, **kwargs):
+        characteristics[CharacteristicsTypes.ON] = True
+
+        await self.async_put_characteristics(characteristics)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the specified light off."""
-        characteristics = [{'aid': self._aid,
-                            'iid': self._chars['on'],
-                            'value': False}]
-        await self._accessory.put_characteristics(characteristics)
+        await self.async_put_characteristics({CharacteristicsTypes.ON: False})

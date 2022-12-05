@@ -1,43 +1,44 @@
 """Support for Abode Security System covers."""
-import logging
+from typing import Any
 
-from homeassistant.components.cover import CoverDevice
+from abodepy.devices.cover import AbodeCover as AbodeCV
+import abodepy.helpers.constants as CONST
 
-from . import DOMAIN as ABODE_DOMAIN, AbodeDevice
+from homeassistant.components.cover import CoverEntity
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-_LOGGER = logging.getLogger(__name__)
+from . import AbodeDevice, AbodeSystem
+from .const import DOMAIN
 
 
-def setup_platform(hass, config, add_entities, discovery_info=None):
+async def async_setup_entry(
+    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+) -> None:
     """Set up Abode cover devices."""
-    import abodepy.helpers.constants as CONST
+    data: AbodeSystem = hass.data[DOMAIN]
 
-    data = hass.data[ABODE_DOMAIN]
-
-    devices = []
-    for device in data.abode.get_devices(generic_type=CONST.TYPE_COVER):
-        if data.is_excluded(device):
-            continue
-
-        devices.append(AbodeCover(data, device))
-
-    data.devices.extend(devices)
-
-    add_entities(devices)
+    async_add_entities(
+        AbodeCover(data, device)
+        for device in data.abode.get_devices(generic_type=CONST.TYPE_COVER)
+    )
 
 
-class AbodeCover(AbodeDevice, CoverDevice):
+class AbodeCover(AbodeDevice, CoverEntity):
     """Representation of an Abode cover."""
 
+    _device: AbodeCV
+
     @property
-    def is_closed(self):
+    def is_closed(self) -> bool:
         """Return true if cover is closed, else False."""
         return not self._device.is_open
 
-    def close_cover(self, **kwargs):
+    def close_cover(self, **kwargs: Any) -> None:
         """Issue close command to cover."""
         self._device.close_cover()
 
-    def open_cover(self, **kwargs):
+    def open_cover(self, **kwargs: Any) -> None:
         """Issue open command to cover."""
         self._device.open_cover()

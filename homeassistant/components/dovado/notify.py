@@ -1,8 +1,7 @@
 """Support for SMS notifications from the Dovado router."""
 import logging
 
-from homeassistant.components.notify import (
-    ATTR_TARGET, BaseNotificationService)
+from homeassistant.components.notify import ATTR_TARGET, BaseNotificationService
 
 from . import DOMAIN as DOVADO_DOMAIN
 
@@ -23,9 +22,7 @@ class DovadoSMSNotificationService(BaseNotificationService):
 
     def send_message(self, message, **kwargs):
         """Send SMS to the specified target phone number."""
-        target = kwargs.get(ATTR_TARGET)
-
-        if not target:
+        if not (target := kwargs.get(ATTR_TARGET)):
             _LOGGER.error("One target is required")
             return
 

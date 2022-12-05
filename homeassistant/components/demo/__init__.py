@@ -1,49 +1,90 @@
 """Set up the demo environment that mimics interaction with devices."""
+from __future__ import annotations
+
 import asyncio
-import logging
-import time
+import datetime
+from random import random
 
-from homeassistant import bootstrap
+from homeassistant import config_entries, setup
+from homeassistant.components import persistent_notification
+from homeassistant.components.recorder import get_instance
+from homeassistant.components.recorder.models import StatisticData, StatisticMetaData
+from homeassistant.components.recorder.statistics import (
+    async_add_external_statistics,
+    get_last_statistics,
+)
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import (
+    ATTR_ENTITY_ID,
+    EVENT_HOMEASSISTANT_START,
+    SOUND_PRESSURE_DB,
+    Platform,
+    UnitOfEnergy,
+    UnitOfTemperature,
+    UnitOfVolume,
+)
 import homeassistant.core as ha
-from homeassistant.const import ATTR_ENTITY_ID, EVENT_HOMEASSISTANT_START
+from homeassistant.core import Event, HomeAssistant
+from homeassistant.helpers.discovery import async_load_platform
+from homeassistant.helpers.issue_registry import IssueSeverity, async_create_issue
+from homeassistant.helpers.typing import ConfigType
+import homeassistant.util.dt as dt_util
 
-DOMAIN = 'demo'
-_LOGGER = logging.getLogger(__name__)
+DOMAIN = "demo"
+
+COMPONENTS_WITH_CONFIG_ENTRY_DEMO_PLATFORM = [
+    Platform.AIR_QUALITY,
+    Platform.ALARM_CONTROL_PANEL,
+    Platform.BINARY_SENSOR,
+    Platform.BUTTON,
+    Platform.CAMERA,
+    Platform.CLIMATE,
+    Platform.COVER,
+    Platform.FAN,
+    Platform.HUMIDIFIER,
+    Platform.LIGHT,
+    Platform.LOCK,
+    Platform.MEDIA_PLAYER,
+    Platform.NUMBER,
+    Platform.SELECT,
+    Platform.SENSOR,
+    Platform.SIREN,
+    Platform.SWITCH,
+    Platform.TEXT,
+    Platform.UPDATE,
+    Platform.VACUUM,
+    Platform.WATER_HEATER,
+]
+
 COMPONENTS_WITH_DEMO_PLATFORM = [
-    'air_quality',
-    'alarm_control_panel',
-    'binary_sensor',
-    'calendar',
-    'camera',
-    'climate',
-    'cover',
-    'device_tracker',
-    'fan',
-    'image_processing',
-    'light',
-    'lock',
-    'media_player',
-    'notify',
-    'sensor',
-    'switch',
-    'tts',
-    'mailbox',
+    Platform.TTS,
+    Platform.STT,
+    Platform.MAILBOX,
+    Platform.NOTIFY,
+    Platform.IMAGE_PROCESSING,
+    Platform.CALENDAR,
+    Platform.DEVICE_TRACKER,
 ]
 
 
-async def async_setup(hass, config):
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the demo environment."""
     if DOMAIN not in config:
         return True
 
-    config.setdefault(ha.DOMAIN, {})
-    config.setdefault(DOMAIN, {})
+    if not hass.config_entries.async_entries(DOMAIN):
+        hass.async_create_task(
+            hass.config_entries.flow.async_init(
+                DOMAIN, context={"source": config_entries.SOURCE_IMPORT}, data={}
+            )
+        )
 
     # Set up demo platforms
-    for component in COMPONENTS_WITH_DEMO_PLATFORM:
-        hass.async_create_task(hass.helpers.discovery.async_load_platform(
-            component, DOMAIN, {}, config,
-        ))
+    for platform in COMPONENTS_WITH_DEMO_PLATFORM:
+        hass.async_create_task(async_load_platform(hass, platform, DOMAIN, {}, config))
+
+    config.setdefault(ha.DOMAIN, {})
+    config.setdefault(DOMAIN, {})
 
     # Set up sun
     if not hass.config.latitude:
@@ -52,45 +93,80 @@ async def async_setup(hass, config):
     if not hass.config.longitude:
         hass.config.longitude = 117.22743
 
-    tasks = [
-        bootstrap.async_setup_component(hass, 'sun', config)
-    ]
+    tasks = [setup.async_setup_component(hass, "sun", config)]
 
     # Set up input select
-    tasks.append(bootstrap.async_setup_component(
-        hass, 'input_select',
-        {'input_select':
-         {'living_room_preset': {'options': ['Visitors',
-                                             'Visitors with kids',
-                                             'Home Alone']},
-          'who_cooks': {'icon': 'mdi:panda',
-                        'initial': 'Anne Therese',
-                        'name': 'Cook today',
-                        'options': ['Paulus', 'Anne Therese']}}}))
+    tasks.append(
+        setup.async_setup_component(
+            hass,
+            "input_select",
+            {
+                "input_select": {
+                    "living_room_preset": {
+                        "options": ["Visitors", "Visitors with kids", "Home Alone"]
+                    },
+                    "who_cooks": {
+                        "icon": "mdi:panda",
+                        "initial": "Anne Therese",
+                        "name": "Cook today",
+                        "options": ["Paulus", "Anne Therese"],
+                    },
+                }
+            },
+        )
+    )
 
     # Set up input boolean
-    tasks.append(bootstrap.async_setup_component(
-        hass, 'input_boolean',
-        {'input_boolean': {'notify': {
-            'icon': 'mdi:car',
-            'initial': False,
-            'name': 'Notify Anne Therese is home'}}}))
+    tasks.append(
+        setup.async_setup_component(
+            hass,
+            "input_boolean",
+            {
+                "input_boolean": {
+                    "notify": {
+                        "icon": "mdi:car",
+                        "initial": False,
+                        "name": "Notify Anne Therese is home",
+                    }
+                }
+            },
+        )
+    )
 
-    # Set up input boolean
-    tasks.append(bootstrap.async_setup_component(
-        hass, 'input_number',
-        {'input_number': {
-            'noise_allowance': {'icon': 'mdi:bell-ring',
-                                'min': 0,
-                                'max': 10,
-                                'name': 'Allowed Noise',
-                                'unit_of_measurement': 'dB'}}}))
+    # Set up input button
+    tasks.append(
+        setup.async_setup_component(
+            hass,
+            "input_button",
+            {
+                "input_button": {
+                    "bell": {
+                        "icon": "mdi:bell-ring-outline",
+                        "name": "Ring bell",
+                    }
+                }
+            },
+        )
+    )
 
-    # Set up weblink
-    tasks.append(bootstrap.async_setup_component(
-        hass, 'weblink',
-        {'weblink': {'entities': [{'name': 'Router',
-                                   'url': 'http://192.168.1.1'}]}}))
+    # Set up input number
+    tasks.append(
+        setup.async_setup_component(
+            hass,
+            "input_number",
+            {
+                "input_number": {
+                    "noise_allowance": {
+                        "icon": "mdi:bell-ring",
+                        "min": 0,
+                        "max": 10,
+                        "name": "Allowed Noise",
+                        "unit_of_measurement": SOUND_PRESSURE_DB,
+                    }
+                }
+            },
+        )
+    )
 
     results = await asyncio.gather(*tasks)
 
@@ -98,98 +174,271 @@ async def async_setup(hass, config):
         return False
 
     # Set up example persistent notification
-    hass.components.persistent_notification.async_create(
-        'This is an example of a persistent notification.',
-        title='Example Notification')
-
-    # Set up configurator
-    configurator_ids = []
-    configurator = hass.components.configurator
-
-    def hue_configuration_callback(data):
-        """Fake callback, mark config as done."""
-        time.sleep(2)
-
-        # First time it is called, pretend it failed.
-        if len(configurator_ids) == 1:
-            configurator.notify_errors(
-                configurator_ids[0],
-                "Failed to register, please try again.")
-
-            configurator_ids.append(0)
-        else:
-            configurator.request_done(configurator_ids[0])
-
-    request_id = configurator.async_request_config(
-        "Philips Hue", hue_configuration_callback,
-        description=("Press the button on the bridge to register Philips "
-                     "Hue with Home Assistant."),
-        description_image="/static/images/config_philips_hue.jpg",
-        fields=[{'id': 'username', 'name': 'Username'}],
-        submit_caption="I have pressed the button"
+    persistent_notification.async_create(
+        hass,
+        "This is an example of a persistent notification.",
+        title="Example Notification",
     )
-    configurator_ids.append(request_id)
 
-    async def demo_start_listener(_event):
+    async def demo_start_listener(_event: Event) -> None:
         """Finish set up."""
         await finish_setup(hass, config)
 
     hass.bus.async_listen(EVENT_HOMEASSISTANT_START, demo_start_listener)
 
+    # Create issues
+    async_create_issue(
+        hass,
+        DOMAIN,
+        "transmogrifier_deprecated",
+        breaks_in_ha_version="2023.1.1",
+        is_fixable=False,
+        learn_more_url="https://en.wiktionary.org/wiki/transmogrifier",
+        severity=IssueSeverity.WARNING,
+        translation_key="transmogrifier_deprecated",
+    )
+
+    async_create_issue(
+        hass,
+        DOMAIN,
+        "out_of_blinker_fluid",
+        breaks_in_ha_version="2023.1.1",
+        is_fixable=True,
+        learn_more_url="https://www.youtube.com/watch?v=b9rntRxLlbU",
+        severity=IssueSeverity.CRITICAL,
+        translation_key="out_of_blinker_fluid",
+    )
+
+    async_create_issue(
+        hass,
+        DOMAIN,
+        "unfixable_problem",
+        is_fixable=False,
+        learn_more_url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        severity=IssueSeverity.WARNING,
+        translation_key="unfixable_problem",
+    )
+
+    async_create_issue(
+        hass,
+        DOMAIN,
+        "bad_psu",
+        is_fixable=True,
+        learn_more_url="https://www.youtube.com/watch?v=b9rntRxLlbU",
+        severity=IssueSeverity.CRITICAL,
+        translation_key="bad_psu",
+    )
+
+    async_create_issue(
+        hass,
+        DOMAIN,
+        "cold_tea",
+        is_fixable=True,
+        severity=IssueSeverity.WARNING,
+        translation_key="cold_tea",
+    )
+
     return True
 
 
-async def finish_setup(hass, config):
-    """Finish set up once demo platforms are set up."""
-    lights = sorted(hass.states.async_entity_ids('light'))
-    switches = sorted(hass.states.async_entity_ids('switch'))
+def _generate_mean_statistics(
+    start: datetime.datetime, end: datetime.datetime, init_value: float, max_diff: float
+) -> list[StatisticData]:
+    statistics: list[StatisticData] = []
+    mean = init_value
+    now = start
+    while now < end:
+        mean = mean + random() * max_diff - max_diff / 2
+        statistics.append(
+            {
+                "start": now,
+                "mean": mean,
+                "min": mean - random() * max_diff,
+                "max": mean + random() * max_diff,
+            }
+        )
+        now = now + datetime.timedelta(hours=1)
 
-    # Set up history graph
-    await bootstrap.async_setup_component(
-        hass, 'history_graph',
-        {'history_graph': {'switches': {
-            'name': 'Recent Switches',
-            'entities': switches,
-            'hours_to_show': 1,
-            'refresh': 60
-        }}}
+    return statistics
+
+
+async def _insert_sum_statistics(
+    hass: HomeAssistant,
+    metadata: StatisticMetaData,
+    start: datetime.datetime,
+    end: datetime.datetime,
+    max_diff: float,
+) -> None:
+    statistics: list[StatisticData] = []
+    now = start
+    sum_ = 0.0
+    statistic_id = metadata["statistic_id"]
+
+    last_stats = await get_instance(hass).async_add_executor_job(
+        get_last_statistics, hass, 1, statistic_id, False, {"sum"}
+    )
+    if statistic_id in last_stats:
+        sum_ = last_stats[statistic_id][0]["sum"] or 0
+    while now < end:
+        sum_ = sum_ + random() * max_diff
+        statistics.append(
+            {
+                "start": now,
+                "sum": sum_,
+            }
+        )
+        now = now + datetime.timedelta(hours=1)
+
+    async_add_external_statistics(hass, metadata, statistics)
+
+
+async def _insert_statistics(hass: HomeAssistant) -> None:
+    """Insert some fake statistics."""
+    now = dt_util.now()
+    yesterday = now - datetime.timedelta(days=1)
+    yesterday_midnight = yesterday.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_midnight = yesterday_midnight + datetime.timedelta(days=1)
+
+    # Fake yesterday's temperatures
+    metadata: StatisticMetaData = {
+        "source": DOMAIN,
+        "name": "Outdoor temperature",
+        "statistic_id": f"{DOMAIN}:temperature_outdoor",
+        "unit_of_measurement": UnitOfTemperature.CELSIUS,
+        "has_mean": True,
+        "has_sum": False,
+    }
+    statistics = _generate_mean_statistics(yesterday_midnight, today_midnight, 15, 1)
+    async_add_external_statistics(hass, metadata, statistics)
+
+    # Add external energy consumption in kWh, ~ 12 kWh / day
+    # This should be possible to pick for the energy dashboard
+    metadata = {
+        "source": DOMAIN,
+        "name": "Energy consumption 1",
+        "statistic_id": f"{DOMAIN}:energy_consumption_kwh",
+        "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR,
+        "has_mean": False,
+        "has_sum": True,
+    }
+    await _insert_sum_statistics(hass, metadata, yesterday_midnight, today_midnight, 1)
+
+    # Add external energy consumption in MWh, ~ 12 kWh / day
+    # This should not be possible to pick for the energy dashboard
+    metadata = {
+        "source": DOMAIN,
+        "name": "Energy consumption 2",
+        "statistic_id": f"{DOMAIN}:energy_consumption_mwh",
+        "unit_of_measurement": UnitOfEnergy.MEGA_WATT_HOUR,
+        "has_mean": False,
+        "has_sum": True,
+    }
+    await _insert_sum_statistics(
+        hass, metadata, yesterday_midnight, today_midnight, 0.001
     )
 
+    # Add external gas consumption in m³, ~6 m3/day
+    # This should be possible to pick for the energy dashboard
+    metadata = {
+        "source": DOMAIN,
+        "name": "Gas consumption 1",
+        "statistic_id": f"{DOMAIN}:gas_consumption_m3",
+        "unit_of_measurement": UnitOfVolume.CUBIC_METERS,
+        "has_mean": False,
+        "has_sum": True,
+    }
+    await _insert_sum_statistics(
+        hass, metadata, yesterday_midnight, today_midnight, 0.5
+    )
+
+    # Add external gas consumption in ft³, ~180 ft3/day
+    # This should not be possible to pick for the energy dashboard
+    metadata = {
+        "source": DOMAIN,
+        "name": "Gas consumption 2",
+        "statistic_id": f"{DOMAIN}:gas_consumption_ft3",
+        "unit_of_measurement": UnitOfVolume.CUBIC_FEET,
+        "has_mean": False,
+        "has_sum": True,
+    }
+    await _insert_sum_statistics(hass, metadata, yesterday_midnight, today_midnight, 15)
+
+
+async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
+    """Set the config entry up."""
+    # Set up demo platforms with config entry
+    await hass.config_entries.async_forward_entry_setups(
+        config_entry, COMPONENTS_WITH_CONFIG_ENTRY_DEMO_PLATFORM
+    )
+    if "recorder" in hass.config.components:
+        await _insert_statistics(hass)
+    return True
+
+
+async def finish_setup(hass: HomeAssistant, config: ConfigType) -> None:
+    """Finish set up once demo platforms are set up."""
+    switches: list[str] | None = None
+    lights: list[str] | None = None
+
+    while not switches and not lights:
+        # Not all platforms might be loaded.
+        if switches is not None:
+            await asyncio.sleep(0)
+        switches = sorted(hass.states.async_entity_ids("switch"))
+        lights = sorted(hass.states.async_entity_ids("light"))
+
+    assert switches is not None
+    assert lights is not None
     # Set up scripts
-    await bootstrap.async_setup_component(
-        hass, 'script',
-        {'script': {
-            'demo': {
-                'alias': 'Toggle {}'.format(lights[0].split('.')[1]),
-                'sequence': [{
-                    'service': 'light.turn_off',
-                    'data': {ATTR_ENTITY_ID: lights[0]}
-                }, {
-                    'delay': {'seconds': 5}
-                }, {
-                    'service': 'light.turn_on',
-                    'data': {ATTR_ENTITY_ID: lights[0]}
-                }, {
-                    'delay': {'seconds': 5}
-                }, {
-                    'service': 'light.turn_off',
-                    'data': {ATTR_ENTITY_ID: lights[0]}
-                }]
-            }}})
+    await setup.async_setup_component(
+        hass,
+        "script",
+        {
+            "script": {
+                "demo": {
+                    "alias": f"Toggle {lights[0].split('.')[1]}",
+                    "sequence": [
+                        {
+                            "service": "light.turn_off",
+                            "data": {ATTR_ENTITY_ID: lights[0]},
+                        },
+                        {"delay": {"seconds": 5}},
+                        {
+                            "service": "light.turn_on",
+                            "data": {ATTR_ENTITY_ID: lights[0]},
+                        },
+                        {"delay": {"seconds": 5}},
+                        {
+                            "service": "light.turn_off",
+                            "data": {ATTR_ENTITY_ID: lights[0]},
+                        },
+                    ],
+                }
+            }
+        },
+    )
 
     # Set up scenes
-    await bootstrap.async_setup_component(
-        hass, 'scene',
-        {'scene': [
-            {'name': 'Romantic lights',
-             'entities': {
-                 lights[0]: True,
-                 lights[1]: {'state': 'on', 'xy_color': [0.33, 0.66],
-                             'brightness': 200},
-             }},
-            {'name': 'Switch on and off',
-             'entities': {
-                 switches[0]: True,
-                 switches[1]: False,
-             }},
-            ]})
+    await setup.async_setup_component(
+        hass,
+        "scene",
+        {
+            "scene": [
+                {
+                    "name": "Romantic lights",
+                    "entities": {
+                        lights[0]: True,
+                        lights[1]: {
+                            "state": "on",
+                            "xy_color": [0.33, 0.66],
+                            "brightness": 200,
+                        },
+                    },
+                },
+                {
+                    "name": "Switch on and off",
+                    "entities": {switches[0]: True, switches[1]: False},
+                },
+            ]
+        },
+    )

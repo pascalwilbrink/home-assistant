@@ -1,115 +1,108 @@
 """Counter for the days until an HTTPS (TLS) certificate will expire."""
-import logging
-import socket
-import ssl
+from __future__ import annotations
+
 from datetime import datetime, timedelta
 
 import voluptuous as vol
 
+from homeassistant.components.sensor import (
+    PLATFORM_SCHEMA,
+    SensorDeviceClass,
+    SensorEntity,
+)
+from homeassistant.config_entries import SOURCE_IMPORT, ConfigEntry
+from homeassistant.const import CONF_HOST, CONF_PORT, EVENT_HOMEASSISTANT_START
+from homeassistant.core import HomeAssistant, callback
 import homeassistant.helpers.config_validation as cv
-from homeassistant.components.sensor import PLATFORM_SCHEMA
-from homeassistant.const import (CONF_NAME, CONF_HOST, CONF_PORT,
-                                 EVENT_HOMEASSISTANT_START)
-from homeassistant.helpers.entity import Entity
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.event import async_call_later
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-_LOGGER = logging.getLogger(__name__)
-
-DEFAULT_NAME = 'SSL Certificate Expiry'
-DEFAULT_PORT = 443
+from . import CertExpiryDataUpdateCoordinator
+from .const import DEFAULT_PORT, DOMAIN
 
 SCAN_INTERVAL = timedelta(hours=12)
 
-TIMEOUT = 10.0
+PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
+    {
+        vol.Required(CONF_HOST): cv.string,
+        vol.Optional(CONF_PORT, default=DEFAULT_PORT): cv.port,
+    }
+)
 
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
-    vol.Required(CONF_HOST): cv.string,
-    vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
-    vol.Optional(CONF_PORT, default=DEFAULT_PORT): cv.port,
-})
 
-
-def setup_platform(hass, config, add_entities, discovery_info=None):
+async def async_setup_platform(
+    hass: HomeAssistant,
+    config: ConfigType,
+    async_add_entities: AddEntitiesCallback,
+    discovery_info: DiscoveryInfoType | None = None,
+) -> None:
     """Set up certificate expiry sensor."""
-    def run_setup(event):
-        """Wait until Home Assistant is fully initialized before creating.
 
-        Delay the setup until Home Assistant is fully initialized.
-        """
-        server_name = config.get(CONF_HOST)
-        server_port = config.get(CONF_PORT)
-        sensor_name = config.get(CONF_NAME)
+    @callback
+    def schedule_import(_):
+        """Schedule delayed import after HA is fully started."""
+        async_call_later(hass, 10, do_import)
 
-        add_entities([SSLCertificate(sensor_name, server_name, server_port)],
-                     True)
+    @callback
+    def do_import(_):
+        """Process YAML import."""
+        hass.async_create_task(
+            hass.config_entries.flow.async_init(
+                DOMAIN, context={"source": SOURCE_IMPORT}, data=dict(config)
+            )
+        )
 
-    # To allow checking of the HA certificate we must first be running.
-    hass.bus.listen_once(EVENT_HOMEASSISTANT_START, run_setup)
+    hass.bus.async_listen_once(EVENT_HOMEASSISTANT_START, schedule_import)
 
 
-class SSLCertificate(Entity):
-    """Implementation of the certificate expiry sensor."""
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Add cert-expiry entry."""
+    coordinator = hass.data[DOMAIN][entry.entry_id]
 
-    def __init__(self, sensor_name, server_name, server_port):
-        """Initialize the sensor."""
-        self.server_name = server_name
-        self.server_port = server_port
-        self._name = sensor_name
-        self._state = None
-        self._available = False
+    sensors = [
+        SSLCertificateTimestamp(coordinator),
+    ]
+
+    async_add_entities(sensors, True)
+
+
+class CertExpiryEntity(CoordinatorEntity):
+    """Defines a base Cert Expiry entity."""
+
+    _attr_icon = "mdi:certificate"
 
     @property
-    def name(self):
-        """Return the name of the sensor."""
-        return self._name
+    def extra_state_attributes(self):
+        """Return additional sensor state attributes."""
+        return {
+            "is_valid": self.coordinator.is_cert_valid,
+            "error": str(self.coordinator.cert_error),
+        }
+
+
+class SSLCertificateTimestamp(CertExpiryEntity, SensorEntity):
+    """Implementation of the Cert Expiry timestamp sensor."""
+
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+
+    def __init__(
+        self,
+        coordinator: CertExpiryDataUpdateCoordinator,
+    ) -> None:
+        """Initialize a Cert Expiry timestamp sensor."""
+        super().__init__(coordinator)
+        self._attr_name = f"Cert Expiry Timestamp ({coordinator.name})"
+        self._attr_unique_id = f"{coordinator.host}:{coordinator.port}-timestamp"
 
     @property
-    def unit_of_measurement(self):
-        """Return the unit this state is expressed in."""
-        return 'days'
-
-    @property
-    def state(self):
+    def native_value(self) -> datetime | None:
         """Return the state of the sensor."""
-        return self._state
-
-    @property
-    def icon(self):
-        """Icon to use in the frontend, if any."""
-        return 'mdi:certificate'
-
-    @property
-    def available(self):
-        """Icon to use in the frontend, if any."""
-        return self._available
-
-    def update(self):
-        """Fetch the certificate information."""
-        ctx = ssl.create_default_context()
-        try:
-            address = (self.server_name, self.server_port)
-            with socket.create_connection(
-                    address, timeout=TIMEOUT) as sock:
-                with ctx.wrap_socket(
-                        sock, server_hostname=address[0]) as ssock:
-                    cert = ssock.getpeercert()
-
-        except socket.gaierror:
-            _LOGGER.error("Cannot resolve hostname: %s", self.server_name)
-            self._available = False
-            return
-        except socket.timeout:
-            _LOGGER.error(
-                "Connection timeout with server: %s", self.server_name)
-            self._available = False
-            return
-        except OSError:
-            _LOGGER.error("Cannot fetch certificate from %s",
-                          self.server_name, exc_info=1)
-            self._available = False
-            return
-
-        ts_seconds = ssl.cert_time_to_seconds(cert['notAfter'])
-        timestamp = datetime.fromtimestamp(ts_seconds)
-        expiry = timestamp - datetime.today()
-        self._available = True
-        self._state = expiry.days
+        if self.coordinator.data:
+            return self.coordinator.data
+        return None

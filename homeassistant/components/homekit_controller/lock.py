@@ -1,101 +1,141 @@
 """Support for HomeKit Controller locks."""
-import logging
+from __future__ import annotations
 
-from homeassistant.components.lock import LockDevice
+from typing import Any
+
+from aiohomekit.model.characteristics import CharacteristicsTypes
+from aiohomekit.model.services import Service, ServicesTypes
+
+from homeassistant.components.lock import STATE_JAMMED, LockEntity
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
-    ATTR_BATTERY_LEVEL, STATE_LOCKED, STATE_UNLOCKED)
+    ATTR_BATTERY_LEVEL,
+    STATE_LOCKED,
+    STATE_UNKNOWN,
+    STATE_UNLOCKED,
+    Platform,
+)
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from . import KNOWN_DEVICES, HomeKitEntity
-
-_LOGGER = logging.getLogger(__name__)
-
-STATE_JAMMED = 'jammed'
+from . import KNOWN_DEVICES
+from .connection import HKDevice
+from .entity import HomeKitEntity
 
 CURRENT_STATE_MAP = {
     0: STATE_UNLOCKED,
     1: STATE_LOCKED,
     2: STATE_JAMMED,
-    3: None,
+    3: STATE_UNKNOWN,
 }
 
-TARGET_STATE_MAP = {
-    STATE_UNLOCKED: 0,
-    STATE_LOCKED: 1,
-}
+TARGET_STATE_MAP = {STATE_UNLOCKED: 0, STATE_LOCKED: 1}
+
+REVERSED_TARGET_STATE_MAP = {v: k for k, v in TARGET_STATE_MAP.items()}
 
 
-async def async_setup_platform(
-        hass, config, async_add_entities, discovery_info=None):
-    """Legacy set up platform."""
-    pass
-
-
-async def async_setup_entry(hass, config_entry, async_add_entities):
+async def async_setup_entry(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
     """Set up Homekit lock."""
-    hkid = config_entry.data['AccessoryPairingID']
-    conn = hass.data[KNOWN_DEVICES][hkid]
+    hkid: str = config_entry.data["AccessoryPairingID"]
+    conn: HKDevice = hass.data[KNOWN_DEVICES][hkid]
 
-    def async_add_service(aid, service):
-        if service['stype'] != 'lock-mechanism':
+    @callback
+    def async_add_service(service: Service) -> bool:
+        if service.type != ServicesTypes.LOCK_MECHANISM:
             return False
-        info = {'aid': aid, 'iid': service['iid']}
-        async_add_entities([HomeKitLock(conn, info)], True)
+        info = {"aid": service.accessory.aid, "iid": service.iid}
+        entity = HomeKitLock(conn, info)
+        conn.async_migrate_unique_id(
+            entity.old_unique_id, entity.unique_id, Platform.LOCK
+        )
+        async_add_entities([entity])
         return True
 
     conn.add_listener(async_add_service)
 
 
-class HomeKitLock(HomeKitEntity, LockDevice):
+class HomeKitLock(HomeKitEntity, LockEntity):
     """Representation of a HomeKit Controller Lock."""
 
-    def __init__(self, accessory, discovery_info):
-        """Initialise the Lock."""
-        super().__init__(accessory, discovery_info)
-        self._state = None
-        self._battery_level = None
-
-    def get_characteristic_types(self):
+    def get_characteristic_types(self) -> list[str]:
         """Define the homekit characteristics the entity cares about."""
-        # pylint: disable=import-error
-        from homekit.model.characteristics import CharacteristicsTypes
         return [
             CharacteristicsTypes.LOCK_MECHANISM_CURRENT_STATE,
             CharacteristicsTypes.LOCK_MECHANISM_TARGET_STATE,
             CharacteristicsTypes.BATTERY_LEVEL,
         ]
 
-    def _update_lock_mechanism_current_state(self, value):
-        self._state = CURRENT_STATE_MAP[value]
-
-    def _update_battery_level(self, value):
-        self._battery_level = value
+    @property
+    def is_locked(self) -> bool | None:
+        """Return true if device is locked."""
+        value = self.service.value(CharacteristicsTypes.LOCK_MECHANISM_CURRENT_STATE)
+        if CURRENT_STATE_MAP[value] == STATE_UNKNOWN:
+            return None
+        return CURRENT_STATE_MAP[value] == STATE_LOCKED
 
     @property
-    def is_locked(self):
-        """Return true if device is locked."""
-        return self._state == STATE_LOCKED
+    def is_locking(self) -> bool:
+        """Return true if device is locking."""
+        current_value = self.service.value(
+            CharacteristicsTypes.LOCK_MECHANISM_CURRENT_STATE
+        )
+        target_value = self.service.value(
+            CharacteristicsTypes.LOCK_MECHANISM_TARGET_STATE
+        )
+        return (
+            CURRENT_STATE_MAP[current_value] == STATE_UNLOCKED
+            and REVERSED_TARGET_STATE_MAP.get(target_value) == STATE_LOCKED
+        )
 
-    async def async_lock(self, **kwargs):
+    @property
+    def is_unlocking(self) -> bool:
+        """Return true if device is unlocking."""
+        current_value = self.service.value(
+            CharacteristicsTypes.LOCK_MECHANISM_CURRENT_STATE
+        )
+        target_value = self.service.value(
+            CharacteristicsTypes.LOCK_MECHANISM_TARGET_STATE
+        )
+        return (
+            CURRENT_STATE_MAP[current_value] == STATE_LOCKED
+            and REVERSED_TARGET_STATE_MAP.get(target_value) == STATE_UNLOCKED
+        )
+
+    @property
+    def is_jammed(self) -> bool:
+        """Return true if device is jammed."""
+        value = self.service.value(CharacteristicsTypes.LOCK_MECHANISM_CURRENT_STATE)
+        return CURRENT_STATE_MAP[value] == STATE_JAMMED
+
+    async def async_lock(self, **kwargs: Any) -> None:
         """Lock the device."""
         await self._set_lock_state(STATE_LOCKED)
 
-    async def async_unlock(self, **kwargs):
+    async def async_unlock(self, **kwargs: Any) -> None:
         """Unlock the device."""
         await self._set_lock_state(STATE_UNLOCKED)
 
-    async def _set_lock_state(self, state):
+    async def _set_lock_state(self, state: str) -> None:
         """Send state command."""
-        characteristics = [{'aid': self._aid,
-                            'iid': self._chars['lock-mechanism.target-state'],
-                            'value': TARGET_STATE_MAP[state]}]
-        await self._accessory.put_characteristics(characteristics)
+        await self.async_put_characteristics(
+            {CharacteristicsTypes.LOCK_MECHANISM_TARGET_STATE: TARGET_STATE_MAP[state]}
+        )
+        # Some locks need to be polled to update the current state
+        # after a target state change.
+        # https://github.com/home-assistant/core/issues/81887
+        await self._accessory.async_request_update()
 
     @property
-    def device_state_attributes(self):
+    def extra_state_attributes(self) -> dict[str, Any]:
         """Return the optional state attributes."""
-        if self._battery_level is None:
-            return None
+        attributes = {}
 
-        return {
-            ATTR_BATTERY_LEVEL: self._battery_level,
-        }
+        battery_level = self.service.value(CharacteristicsTypes.BATTERY_LEVEL)
+        if battery_level:
+            attributes[ATTR_BATTERY_LEVEL] = battery_level
+
+        return attributes

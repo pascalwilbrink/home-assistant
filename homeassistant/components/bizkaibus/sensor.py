@@ -1,75 +1,64 @@
 """Support for Bizkaibus, Biscay (Basque Country, Spain) Bus service."""
+from __future__ import annotations
 
-import logging
+from contextlib import suppress
 
-import voluptuous as vol
 from bizkaibus.bizkaibus import BizkaibusData
+import voluptuous as vol
+
+from homeassistant.components.sensor import PLATFORM_SCHEMA, SensorEntity
+from homeassistant.const import CONF_NAME, TIME_MINUTES
+from homeassistant.core import HomeAssistant
 import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
-from homeassistant.const import CONF_NAME
-from homeassistant.components.sensor import PLATFORM_SCHEMA
-from homeassistant.helpers.entity import Entity
+ATTR_DUE_IN = "Due in"
 
+CONF_STOP_ID = "stopid"
+CONF_ROUTE = "route"
 
-_LOGGER = logging.getLogger(__name__)
+DEFAULT_NAME = "Next bus"
 
-ATTR_DUE_IN = 'Due in'
-
-CONF_STOP_ID = 'stopid'
-CONF_ROUTE = 'route'
-
-DEFAULT_NAME = 'Next bus'
-
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
-    vol.Required(CONF_STOP_ID): cv.string,
-    vol.Required(CONF_ROUTE): cv.string,
-    vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
-})
+PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
+    {
+        vol.Required(CONF_STOP_ID): cv.string,
+        vol.Required(CONF_ROUTE): cv.string,
+        vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
+    }
+)
 
 
-def setup_platform(hass, config, add_entities, discovery_info=None):
+def setup_platform(
+    hass: HomeAssistant,
+    config: ConfigType,
+    add_entities: AddEntitiesCallback,
+    discovery_info: DiscoveryInfoType | None = None,
+) -> None:
     """Set up the Bizkaibus public transport sensor."""
-    name = config.get(CONF_NAME)
+    name = config[CONF_NAME]
     stop = config[CONF_STOP_ID]
     route = config[CONF_ROUTE]
 
     data = Bizkaibus(stop, route)
-    add_entities([BizkaibusSensor(data, stop, route, name)], True)
+    add_entities([BizkaibusSensor(data, name)], True)
 
 
-class BizkaibusSensor(Entity):
+class BizkaibusSensor(SensorEntity):
     """The class for handling the data."""
 
-    def __init__(self, data, stop, route, name):
+    _attr_native_unit_of_measurement = TIME_MINUTES
+
+    def __init__(self, data, name):
         """Initialize the sensor."""
         self.data = data
-        self.stop = stop
-        self.route = route
-        self._name = name
-        self._state = None
+        self._attr_name = name
 
-    @property
-    def name(self):
-        """Return the name of the sensor."""
-        return self._name
-
-    @property
-    def state(self):
-        """Return the state of the sensor."""
-        return self._state
-
-    @property
-    def unit_of_measurement(self):
-        """Return the unit of measurement of the sensor."""
-        return 'minutes'
-
-    def update(self):
+    def update(self) -> None:
         """Get the latest data from the webservice."""
         self.data.update()
-        try:
-            self._state = self.data.info[0][ATTR_DUE_IN]
-        except TypeError:
-            pass
+        with suppress(TypeError):
+            self._attr_native_value = self.data.info[0][ATTR_DUE_IN]
 
 
 class Bizkaibus:

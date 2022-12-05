@@ -1,40 +1,87 @@
 """Axis network device abstraction."""
 
 import asyncio
-import async_timeout
+from types import MappingProxyType
+from typing import Any
 
+import async_timeout
+import axis
+from axis.configuration import Configuration
+from axis.errors import Unauthorized
+from axis.event_stream import OPERATION_INITIALIZED
+from axis.mqtt import mqtt_json_to_event
+from axis.streammanager import SIGNAL_PLAYING, STATE_STOPPED
+
+from homeassistant.components import mqtt
+from homeassistant.components.mqtt import DOMAIN as MQTT_DOMAIN
+from homeassistant.components.mqtt.models import ReceiveMessage
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
-    CONF_DEVICE, CONF_HOST, CONF_MAC, CONF_NAME, CONF_PASSWORD, CONF_PORT,
-    CONF_USERNAME)
-from homeassistant.core import callback
-from homeassistant.exceptions import ConfigEntryNotReady
+    CONF_HOST,
+    CONF_MODEL,
+    CONF_NAME,
+    CONF_PASSWORD,
+    CONF_PORT,
+    CONF_TRIGGER_TIME,
+    CONF_USERNAME,
+)
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import CONNECTION_NETWORK_MAC
 from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.helpers.httpx_client import get_async_client
+from homeassistant.setup import async_when_setup
 
-from .const import CONF_CAMERA, CONF_EVENTS, CONF_MODEL, DOMAIN, LOGGER
-
+from .const import (
+    ATTR_MANUFACTURER,
+    CONF_EVENTS,
+    CONF_STREAM_PROFILE,
+    CONF_VIDEO_SOURCE,
+    DEFAULT_EVENTS,
+    DEFAULT_STREAM_PROFILE,
+    DEFAULT_TRIGGER_TIME,
+    DEFAULT_VIDEO_SOURCE,
+    DOMAIN as AXIS_DOMAIN,
+    LOGGER,
+    PLATFORMS,
+)
 from .errors import AuthenticationRequired, CannotConnect
 
 
 class AxisNetworkDevice:
     """Manages a Axis device."""
 
-    def __init__(self, hass, config_entry):
+    def __init__(
+        self, hass: HomeAssistant, config_entry: ConfigEntry, api: axis.AxisDevice
+    ) -> None:
         """Initialize the device."""
         self.hass = hass
         self.config_entry = config_entry
+        self.api = api
+
         self.available = True
-
-        self.api = None
-        self.fw_version = None
-        self.product_type = None
-
-        self.listeners = []
+        self.fw_version = api.vapix.firmware_version
+        self.product_type = api.vapix.product_type
 
     @property
     def host(self):
-        """Return the host of this device."""
-        return self.config_entry.data[CONF_DEVICE][CONF_HOST]
+        """Return the host address of this device."""
+        return self.config_entry.data[CONF_HOST]
+
+    @property
+    def port(self):
+        """Return the HTTP port of this device."""
+        return self.config_entry.data[CONF_PORT]
+
+    @property
+    def username(self):
+        """Return the username of this device."""
+        return self.config_entry.data[CONF_USERNAME]
+
+    @property
+    def password(self):
+        """Return the password of this device."""
+        return self.config_entry.data[CONF_PASSWORD]
 
     @property
     def model(self):
@@ -47,84 +94,52 @@ class AxisNetworkDevice:
         return self.config_entry.data[CONF_NAME]
 
     @property
-    def serial(self):
-        """Return the mac of this device."""
-        return self.config_entry.data[CONF_MAC]
+    def unique_id(self):
+        """Return the unique ID (serial number) of this device."""
+        return self.config_entry.unique_id
 
-    async def async_update_device_registry(self):
-        """Update device registry."""
-        device_registry = await \
-            self.hass.helpers.device_registry.async_get_registry()
-        device_registry.async_get_or_create(
-            config_entry_id=self.config_entry.entry_id,
-            connections={(CONNECTION_NETWORK_MAC, self.serial)},
-            identifiers={(DOMAIN, self.serial)},
-            manufacturer='Axis Communications AB',
-            model="{} {}".format(self.model, self.product_type),
-            name=self.name,
-            sw_version=self.fw_version
+    # Options
+
+    @property
+    def option_events(self):
+        """Config entry option defining if platforms based on events should be created."""
+        return self.config_entry.options.get(CONF_EVENTS, DEFAULT_EVENTS)
+
+    @property
+    def option_stream_profile(self):
+        """Config entry option defining what stream profile camera platform should use."""
+        return self.config_entry.options.get(
+            CONF_STREAM_PROFILE, DEFAULT_STREAM_PROFILE
         )
 
-    async def async_setup(self):
-        """Set up the device."""
-        try:
-            self.api = await get_device(
-                self.hass, self.config_entry.data[CONF_DEVICE])
-
-        except CannotConnect:
-            raise ConfigEntryNotReady
-
-        except Exception:  # pylint: disable=broad-except
-            LOGGER.error(
-                'Unknown error connecting with Axis device on %s', self.host)
-            return False
-
-        self.fw_version = self.api.vapix.params.firmware_version
-        self.product_type = self.api.vapix.params.prodtype
-
-        if self.config_entry.options[CONF_CAMERA]:
-
-            self.hass.async_create_task(
-                self.hass.config_entries.async_forward_entry_setup(
-                    self.config_entry, 'camera'))
-
-        if self.config_entry.options[CONF_EVENTS]:
-
-            self.api.stream.connection_status_callback = \
-                self.async_connection_status_callback
-            self.api.enable_events(event_callback=self.async_event_callback)
-
-            platform_tasks = [
-                self.hass.config_entries.async_forward_entry_setup(
-                    self.config_entry, platform)
-                for platform in ['binary_sensor', 'switch']
-            ]
-            self.hass.async_create_task(self.start(platform_tasks))
-
-        self.config_entry.add_update_listener(self.async_new_address_callback)
-
-        return True
+    @property
+    def option_trigger_time(self):
+        """Config entry option defining minimum number of seconds to keep trigger high."""
+        return self.config_entry.options.get(CONF_TRIGGER_TIME, DEFAULT_TRIGGER_TIME)
 
     @property
-    def event_new_address(self):
-        """Device specific event to signal new device address."""
-        return 'axis_new_address_{}'.format(self.serial)
+    def option_video_source(self):
+        """Config entry option defining what video source camera platform should use."""
+        return self.config_entry.options.get(CONF_VIDEO_SOURCE, DEFAULT_VIDEO_SOURCE)
 
-    @staticmethod
-    async def async_new_address_callback(hass, entry):
-        """Handle signals of device getting new address.
-
-        This is a static method because a class method (bound method),
-        can not be used with weak references.
-        """
-        device = hass.data[DOMAIN][entry.data[CONF_MAC]]
-        device.api.config.host = device.host
-        async_dispatcher_send(hass, device.event_new_address)
+    # Signals
 
     @property
-    def event_reachable(self):
+    def signal_reachable(self):
         """Device specific event to signal a change in connection status."""
-        return 'axis_reachable_{}'.format(self.serial)
+        return f"axis_reachable_{self.unique_id}"
+
+    @property
+    def signal_new_event(self):
+        """Device specific event to signal new device event available."""
+        return f"axis_new_event_{self.unique_id}"
+
+    @property
+    def signal_new_address(self):
+        """Device specific event to signal a change in device address."""
+        return f"axis_new_address_{self.unique_id}"
+
+    # Callbacks
 
     @callback
     def async_connection_status_callback(self, status):
@@ -133,97 +148,136 @@ class AxisNetworkDevice:
         This is called on every RTSP keep-alive message.
         Only signal state change if state change is true.
         """
-        from axis.streammanager import SIGNAL_PLAYING
+
         if self.available != (status == SIGNAL_PLAYING):
             self.available = not self.available
-            async_dispatcher_send(self.hass, self.event_reachable, True)
-
-    @property
-    def event_new_sensor(self):
-        """Device specific event to signal new sensor available."""
-        return 'axis_add_sensor_{}'.format(self.serial)
+            async_dispatcher_send(self.hass, self.signal_reachable, True)
 
     @callback
     def async_event_callback(self, action, event_id):
         """Call to configure events when initialized on event stream."""
-        if action == 'add':
-            async_dispatcher_send(self.hass, self.event_new_sensor, event_id)
+        if action == OPERATION_INITIALIZED:
+            async_dispatcher_send(self.hass, self.signal_new_event, event_id)
 
-    async def start(self, platform_tasks):
-        """Start the event stream when all platforms are loaded."""
-        await asyncio.gather(*platform_tasks)
-        self.api.start()
+    @staticmethod
+    async def async_new_address_callback(
+        hass: HomeAssistant, entry: ConfigEntry
+    ) -> None:
+        """Handle signals of device getting new address.
+
+        Called when config entry is updated.
+        This is a static method because a class method (bound method),
+        can not be used with weak references.
+        """
+        device: AxisNetworkDevice = hass.data[AXIS_DOMAIN][entry.unique_id]
+        device.api.config.host = device.host
+        async_dispatcher_send(hass, device.signal_new_address)
+
+    async def async_update_device_registry(self) -> None:
+        """Update device registry."""
+        device_registry = dr.async_get(self.hass)
+        device_registry.async_get_or_create(
+            config_entry_id=self.config_entry.entry_id,
+            configuration_url=self.api.config.url,
+            connections={(CONNECTION_NETWORK_MAC, self.unique_id)},
+            identifiers={(AXIS_DOMAIN, self.unique_id)},
+            manufacturer=ATTR_MANUFACTURER,
+            model=f"{self.model} {self.product_type}",
+            name=self.name,
+            sw_version=self.fw_version,
+        )
+
+    async def async_use_mqtt(self, hass: HomeAssistant, component: str) -> None:
+        """Set up to use MQTT."""
+        try:
+            status = await self.api.vapix.mqtt.get_client_status()
+        except Unauthorized:
+            # This means the user has too low privileges
+            status = {}
+
+        if status.get("data", {}).get("status", {}).get("state") == "active":
+            self.config_entry.async_on_unload(
+                await mqtt.async_subscribe(
+                    hass, f"{self.api.vapix.serial_number}/#", self.mqtt_message
+                )
+            )
 
     @callback
-    def shutdown(self, event):
+    def mqtt_message(self, message: ReceiveMessage) -> None:
+        """Receive Axis MQTT message."""
+        self.disconnect_from_stream()
+
+        event = mqtt_json_to_event(message.payload)
+        self.api.event.update([event])
+
+    # Setup and teardown methods
+
+    def async_setup_events(self):
+        """Set up the device events."""
+
+        if self.option_events:
+            self.api.stream.connection_status_callback.append(
+                self.async_connection_status_callback
+            )
+            self.api.enable_events(event_callback=self.async_event_callback)
+            self.api.stream.start()
+
+            if self.api.vapix.mqtt:
+                async_when_setup(self.hass, MQTT_DOMAIN, self.async_use_mqtt)
+
+    @callback
+    def disconnect_from_stream(self) -> None:
+        """Stop stream."""
+        if self.api.stream.state != STATE_STOPPED:
+            self.api.stream.connection_status_callback.clear()
+            self.api.stream.stop()
+
+    async def shutdown(self, event) -> None:
         """Stop the event stream."""
-        self.api.stop()
+        self.disconnect_from_stream()
 
-    async def async_reset(self):
+    async def async_reset(self) -> bool:
         """Reset this device to default state."""
-        platform_tasks = []
+        self.disconnect_from_stream()
 
-        if self.config_entry.options[CONF_CAMERA]:
-            platform_tasks.append(
-                self.hass.config_entries.async_forward_entry_unload(
-                    self.config_entry, 'camera'))
-
-        if self.config_entry.options[CONF_EVENTS]:
-            self.api.stop()
-            platform_tasks += [
-                self.hass.config_entries.async_forward_entry_unload(
-                    self.config_entry, platform)
-                for platform in ['binary_sensor', 'switch']
-            ]
-
-        await asyncio.gather(*platform_tasks)
-
-        for unsub_dispatcher in self.listeners:
-            unsub_dispatcher()
-        self.listeners = []
-
-        return True
+        return await self.hass.config_entries.async_unload_platforms(
+            self.config_entry, PLATFORMS
+        )
 
 
-async def get_device(hass, config):
+async def get_axis_device(
+    hass: HomeAssistant,
+    config: MappingProxyType[str, Any],
+) -> axis.AxisDevice:
     """Create a Axis device."""
-    import axis
+    session = get_async_client(hass, verify_ssl=False)
 
     device = axis.AxisDevice(
-        loop=hass.loop, host=config[CONF_HOST],
-        username=config[CONF_USERNAME],
-        password=config[CONF_PASSWORD],
-        port=config[CONF_PORT], web_proto='http')
-
-    device.vapix.initialize_params(preload_data=False)
-    device.vapix.initialize_ports()
+        Configuration(
+            session,
+            config[CONF_HOST],
+            port=config[CONF_PORT],
+            username=config[CONF_USERNAME],
+            password=config[CONF_PASSWORD],
+        )
+    )
 
     try:
-        with async_timeout.timeout(15):
-
-            await asyncio.gather(
-                hass.async_add_executor_job(
-                    device.vapix.params.update_brand),
-
-                hass.async_add_executor_job(
-                    device.vapix.params.update_properties),
-
-                hass.async_add_executor_job(
-                    device.vapix.ports.update)
-            )
+        async with async_timeout.timeout(30):
+            await device.vapix.initialize()
 
         return device
 
-    except axis.Unauthorized:
-        LOGGER.warning("Connected to device at %s but not registered.",
-                       config[CONF_HOST])
-        raise AuthenticationRequired
+    except axis.Unauthorized as err:
+        LOGGER.warning(
+            "Connected to device at %s but not registered", config[CONF_HOST]
+        )
+        raise AuthenticationRequired from err
 
-    except (asyncio.TimeoutError, axis.RequestError):
-        LOGGER.error("Error connecting to the Axis device at %s",
-                     config[CONF_HOST])
-        raise CannotConnect
+    except (asyncio.TimeoutError, axis.RequestError) as err:
+        LOGGER.error("Error connecting to the Axis device at %s", config[CONF_HOST])
+        raise CannotConnect from err
 
-    except axis.AxisException:
-        LOGGER.exception('Unknown Axis communication error occurred')
-        raise AuthenticationRequired
+    except axis.AxisException as err:
+        LOGGER.exception("Unknown Axis communication error occurred")
+        raise AuthenticationRequired from err

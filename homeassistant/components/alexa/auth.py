@@ -1,24 +1,26 @@
 """Support for Alexa skill auth."""
 import asyncio
+from datetime import timedelta
+from http import HTTPStatus
 import json
 import logging
-from datetime import timedelta
+
 import aiohttp
 import async_timeout
 
+from homeassistant.const import CONF_CLIENT_ID, CONF_CLIENT_SECRET
 from homeassistant.core import callback
 from homeassistant.helpers import aiohttp_client
+from homeassistant.helpers.storage import Store
 from homeassistant.util import dt
 
 _LOGGER = logging.getLogger(__name__)
 
 LWA_TOKEN_URI = "https://api.amazon.com/auth/o2/token"
-LWA_HEADERS = {
-    "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"
-}
+LWA_HEADERS = {"Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"}
 
 PREEMPTIVE_REFRESH_TTL_IN_SECONDS = 300
-STORAGE_KEY = 'alexa_auth'
+STORAGE_KEY = "alexa_auth"
 STORAGE_VERSION = 1
 STORAGE_EXPIRE_TIME = "expire_time"
 STORAGE_ACCESS_TOKEN = "access_token"
@@ -36,7 +38,7 @@ class Auth:
         self.client_secret = client_secret
 
         self._prefs = None
-        self._store = hass.helpers.storage.Store(STORAGE_VERSION, STORAGE_KEY)
+        self._store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
 
         self._get_token_lock = asyncio.Lock()
 
@@ -48,13 +50,20 @@ class Auth:
         lwa_params = {
             "grant_type": "authorization_code",
             "code": accept_grant_code,
-            "client_id": self.client_id,
-            "client_secret": self.client_secret
+            CONF_CLIENT_ID: self.client_id,
+            CONF_CLIENT_SECRET: self.client_secret,
         }
-        _LOGGER.debug("Calling LWA to get the access token (first time), "
-                      "with: %s", json.dumps(lwa_params))
+        _LOGGER.debug(
+            "Calling LWA to get the access token (first time), with: %s",
+            json.dumps(lwa_params),
+        )
 
         return await self._async_request_new_token(lwa_params)
+
+    @callback
+    def async_invalidate_access_token(self):
+        """Invalidate access token."""
+        self._prefs[STORAGE_ACCESS_TOKEN] = None
 
     async def async_get_access_token(self):
         """Perform access token or token refresh request."""
@@ -63,21 +72,21 @@ class Auth:
                 await self.async_load_preferences()
 
             if self.is_token_valid():
-                _LOGGER.debug("Token still valid, using it.")
+                _LOGGER.debug("Token still valid, using it")
                 return self._prefs[STORAGE_ACCESS_TOKEN]
 
             if self._prefs[STORAGE_REFRESH_TOKEN] is None:
-                _LOGGER.debug("Token invalid and no refresh token available.")
+                _LOGGER.debug("Token invalid and no refresh token available")
                 return None
 
             lwa_params = {
                 "grant_type": "refresh_token",
                 "refresh_token": self._prefs[STORAGE_REFRESH_TOKEN],
-                "client_id": self.client_id,
-                "client_secret": self.client_secret
+                CONF_CLIENT_ID: self.client_id,
+                CONF_CLIENT_SECRET: self.client_secret,
             }
 
-            _LOGGER.debug("Calling LWA to refresh the access token.")
+            _LOGGER.debug("Calling LWA to refresh the access token")
             return await self._async_request_new_token(lwa_params)
 
     @callback
@@ -88,7 +97,8 @@ class Auth:
 
         expire_time = dt.parse_datetime(self._prefs[STORAGE_EXPIRE_TIME])
         preemptive_expire_time = expire_time - timedelta(
-            seconds=PREEMPTIVE_REFRESH_TTL_IN_SECONDS)
+            seconds=PREEMPTIVE_REFRESH_TTL_IN_SECONDS
+        )
 
         return dt.utcnow() < preemptive_expire_time
 
@@ -96,21 +106,23 @@ class Auth:
 
         try:
             session = aiohttp_client.async_get_clientsession(self.hass)
-            with async_timeout.timeout(10):
-                response = await session.post(LWA_TOKEN_URI,
-                                              headers=LWA_HEADERS,
-                                              data=lwa_params,
-                                              allow_redirects=True)
+            async with async_timeout.timeout(10):
+                response = await session.post(
+                    LWA_TOKEN_URI,
+                    headers=LWA_HEADERS,
+                    data=lwa_params,
+                    allow_redirects=True,
+                )
 
         except (asyncio.TimeoutError, aiohttp.ClientError):
-            _LOGGER.error("Timeout calling LWA to get auth token.")
+            _LOGGER.error("Timeout calling LWA to get auth token")
             return None
 
         _LOGGER.debug("LWA response header: %s", response.headers)
         _LOGGER.debug("LWA response status: %s", response.status)
 
-        if response.status != 200:
-            _LOGGER.error("Error calling LWA to get auth token.")
+        if response.status != HTTPStatus.OK:
+            _LOGGER.error("Error calling LWA to get auth token")
             return None
 
         response_json = await response.json()
@@ -121,8 +133,9 @@ class Auth:
         expires_in = response_json["expires_in"]
         expire_time = dt.utcnow() + timedelta(seconds=expires_in)
 
-        await self._async_update_preferences(access_token, refresh_token,
-                                             expire_time.isoformat())
+        await self._async_update_preferences(
+            access_token, refresh_token, expire_time.isoformat()
+        )
 
         return access_token
 
@@ -134,11 +147,10 @@ class Auth:
             self._prefs = {
                 STORAGE_ACCESS_TOKEN: None,
                 STORAGE_REFRESH_TOKEN: None,
-                STORAGE_EXPIRE_TIME: None
+                STORAGE_EXPIRE_TIME: None,
             }
 
-    async def _async_update_preferences(self, access_token, refresh_token,
-                                        expire_time):
+    async def _async_update_preferences(self, access_token, refresh_token, expire_time):
         """Update user preferences."""
         if self._prefs is None:
             await self.async_load_preferences()

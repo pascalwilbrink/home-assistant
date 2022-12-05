@@ -1,36 +1,31 @@
 """Support for the Locative platform."""
-import logging
-
-from homeassistant.core import callback
-from homeassistant.components.device_tracker import SOURCE_TYPE_GPS
-from homeassistant.components.device_tracker.config_entry import (
-    TrackerEntity
-)
+from homeassistant.components.device_tracker import SourceType, TrackerEntity
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import DOMAIN as LT_DOMAIN, TRACKER_UPDATE
 
-_LOGGER = logging.getLogger(__name__)
 
-
-async def async_setup_entry(hass, entry, async_add_entities):
+async def async_setup_entry(
+    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+) -> None:
     """Configure a dispatcher connection based on a config entry."""
+
     @callback
     def _receive_data(device, location, location_name):
         """Receive set location."""
-        if device in hass.data[LT_DOMAIN]['devices']:
+        if device in hass.data[LT_DOMAIN]["devices"]:
             return
 
-        hass.data[LT_DOMAIN]['devices'].add(device)
+        hass.data[LT_DOMAIN]["devices"].add(device)
 
-        async_add_entities([LocativeEntity(
-            device, location, location_name
-        )])
+        async_add_entities([LocativeEntity(device, location, location_name)])
 
-    hass.data[LT_DOMAIN]['unsub_device_tracker'][entry.entry_id] = \
-        async_dispatcher_connect(hass, TRACKER_UPDATE, _receive_data)
-
-    return True
+    hass.data[LT_DOMAIN]["unsub_device_tracker"][
+        entry.entry_id
+    ] = async_dispatcher_connect(hass, TRACKER_UPDATE, _receive_data)
 
 
 class LocativeEntity(TrackerEntity):
@@ -64,21 +59,17 @@ class LocativeEntity(TrackerEntity):
         return self._name
 
     @property
-    def should_poll(self):
-        """No polling needed."""
-        return False
-
-    @property
-    def source_type(self):
+    def source_type(self) -> SourceType:
         """Return the source type, eg gps or router, of the device."""
-        return SOURCE_TYPE_GPS
+        return SourceType.GPS
 
-    async def async_added_to_hass(self):
+    async def async_added_to_hass(self) -> None:
         """Register state update callback."""
         self._unsub_dispatcher = async_dispatcher_connect(
-            self.hass, TRACKER_UPDATE, self._async_receive_data)
+            self.hass, TRACKER_UPDATE, self._async_receive_data
+        )
 
-    async def async_will_remove_from_hass(self):
+    async def async_will_remove_from_hass(self) -> None:
         """Clean up after entity before removal."""
         self._unsub_dispatcher()
 

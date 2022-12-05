@@ -1,34 +1,43 @@
 """Support for Eufy switches."""
-import logging
+from __future__ import annotations
 
-from homeassistant.components.switch import SwitchDevice
+from typing import Any
 
-_LOGGER = logging.getLogger(__name__)
+import lakeside
+
+from homeassistant.components.switch import SwitchEntity
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
 
-def setup_platform(hass, config, add_entities, discovery_info=None):
+def setup_platform(
+    hass: HomeAssistant,
+    config: ConfigType,
+    add_entities: AddEntitiesCallback,
+    discovery_info: DiscoveryInfoType | None = None,
+) -> None:
     """Set up Eufy switches."""
     if discovery_info is None:
         return
     add_entities([EufySwitch(discovery_info)], True)
 
 
-class EufySwitch(SwitchDevice):
+class EufySwitch(SwitchEntity):
     """Representation of a Eufy switch."""
 
     def __init__(self, device):
         """Initialize the light."""
-        import lakeside
 
         self._state = None
-        self._name = device['name']
-        self._address = device['address']
-        self._code = device['code']
-        self._type = device['type']
+        self._name = device["name"]
+        self._address = device["address"]
+        self._code = device["code"]
+        self._type = device["type"]
         self._switch = lakeside.switch(self._address, self._code, self._type)
         self._switch.connect()
 
-    def update(self):
+    def update(self) -> None:
         """Synchronise state from the switch."""
         self._switch.update()
         self._state = self._switch.power
@@ -48,7 +57,7 @@ class EufySwitch(SwitchDevice):
         """Return true if device is on."""
         return self._state
 
-    def turn_on(self, **kwargs):
+    def turn_on(self, **kwargs: Any) -> None:
         """Turn the specified switch on."""
         try:
             self._switch.set_state(True)
@@ -56,7 +65,7 @@ class EufySwitch(SwitchDevice):
             self._switch.connect()
             self._switch.set_state(power=True)
 
-    def turn_off(self, **kwargs):
+    def turn_off(self, **kwargs: Any) -> None:
         """Turn the specified switch off."""
         try:
             self._switch.set_state(False)

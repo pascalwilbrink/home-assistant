@@ -1,10 +1,8 @@
 {
   "domain": "notify",
-  "name": "Notify",
-  "documentation": "https://www.home-assistant.io/components/notify",
-  "requirements": [],
-  "dependencies": [],
-  "codeowners": [
-    "@home-assistant/core"
-  ]
+  "name": "Notifications",
+  "documentation": "https://www.home-assistant.io/integrations/notify",
+  "codeowners": ["@home-assistant/core"],
+  "quality_scale": "internal",
+  "integration_type": "entity"
 }

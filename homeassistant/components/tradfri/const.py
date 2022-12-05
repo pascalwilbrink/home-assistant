@@ -1,7 +1,13 @@
 """Consts used by Tradfri."""
-from homeassistant.const import CONF_HOST  # noqa pylint: disable=unused-import
+import logging
 
-CONF_IMPORT_GROUPS = 'import_groups'
-CONF_IDENTITY = 'identity'
-CONF_KEY = 'key'
-CONF_GATEWAY_ID = 'gateway_id'
+LOGGER = logging.getLogger(__package__)
+
+CONF_GATEWAY_ID = "gateway_id"
+CONF_IDENTITY = "identity"
+CONF_KEY = "key"
+COORDINATOR = "coordinator"
+COORDINATOR_LIST = "coordinator_list"
+DOMAIN = "tradfri"
+FACTORY = "tradfri_factory"
+KEY_API = "tradfri_api"

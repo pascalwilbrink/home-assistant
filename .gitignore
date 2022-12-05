@@ -1,8 +1,12 @@
-config/*
+/config
 config2/*
 
 tests/testing_config/deps
-tests/testing_config/home-assistant.log
+tests/testing_config/home-assistant.log*
+
+# hass-release
+data/
+.token
 
 # Hide sublime text stuff
 *.sublime-project
@@ -46,6 +50,7 @@ develop-eggs
 .installed.cfg
 lib
 lib64
+pip-wheel-metadata
 
 # Logs
 *.log
@@ -53,10 +58,12 @@ pip-log.txt
 
 # Unit test / coverage reports
 .coverage
-.tox
+coverage.xml
 nosetests.xml
 htmlcov/
 test-reports/
+test-results.xml
+test-output.xml
 
 # Translations
 *.mo
@@ -80,7 +87,7 @@ venv
 .venv
 Pipfile*
 share/*
-Scripts/
+/Scripts/
 
 # vimmy stuff
 *.swp
@@ -98,6 +105,7 @@ virtualization/vagrant/config
 !.vscode/cSpell.json
 !.vscode/extensions.json
 !.vscode/tasks.json
+.env
 
 # Built docs
 docs/build
@@ -110,9 +118,16 @@ desktop.ini
 
 # mypy
 /.mypy_cache/*
+/.dmypy.json
 
 # Secrets
 .lokalise_token
 
 # monkeytype
 monkeytype.sqlite3
+
+# This is left behind by Azure Restore Cache
+tmp_cache
+
+# python-language-server / Rope
+.ropeproject

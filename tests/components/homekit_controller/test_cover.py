@@ -1,183 +1,216 @@
 """Basic checks for HomeKitalarm_control_panel."""
-from tests.components.homekit_controller.common import (
-    FakeService, setup_test_component)
+from aiohomekit.model.characteristics import CharacteristicsTypes
+from aiohomekit.model.services import ServicesTypes
 
-POSITION_STATE = ('window-covering', 'position.state')
-POSITION_CURRENT = ('window-covering', 'position.current')
-POSITION_TARGET = ('window-covering', 'position.target')
-POSITION_HOLD = ('window-covering', 'position.hold')
+from homeassistant.helpers import entity_registry as er
 
-H_TILT_CURRENT = ('window-covering', 'horizontal-tilt.current')
-H_TILT_TARGET = ('window-covering', 'horizontal-tilt.target')
-
-V_TILT_CURRENT = ('window-covering', 'vertical-tilt.current')
-V_TILT_TARGET = ('window-covering', 'vertical-tilt.target')
-
-WINDOW_OBSTRUCTION = ('window-covering', 'obstruction-detected')
-
-DOOR_CURRENT = ('garage-door-opener', 'door-state.current')
-DOOR_TARGET = ('garage-door-opener', 'door-state.target')
-DOOR_OBSTRUCTION = ('garage-door-opener', 'obstruction-detected')
+from .common import get_next_aid, setup_test_component
 
 
-def create_window_covering_service():
+def create_window_covering_service(accessory):
     """Define a window-covering characteristics as per page 219 of HAP spec."""
-    service = FakeService('public.hap.service.window-covering')
+    service = accessory.add_service(ServicesTypes.WINDOW_COVERING)
 
-    cur_state = service.add_characteristic('position.current')
+    cur_state = service.add_char(CharacteristicsTypes.POSITION_CURRENT)
     cur_state.value = 0
 
-    targ_state = service.add_characteristic('position.target')
+    targ_state = service.add_char(CharacteristicsTypes.POSITION_TARGET)
     targ_state.value = 0
 
-    position_state = service.add_characteristic('position.state')
+    position_state = service.add_char(CharacteristicsTypes.POSITION_STATE)
     position_state.value = 0
 
-    position_hold = service.add_characteristic('position.hold')
+    position_hold = service.add_char(CharacteristicsTypes.POSITION_HOLD)
     position_hold.value = 0
 
-    obstruction = service.add_characteristic('obstruction-detected')
+    obstruction = service.add_char(CharacteristicsTypes.OBSTRUCTION_DETECTED)
     obstruction.value = False
 
-    name = service.add_characteristic('name')
+    name = service.add_char(CharacteristicsTypes.NAME)
     name.value = "testdevice"
 
     return service
 
 
-def create_window_covering_service_with_h_tilt():
+def create_window_covering_service_with_h_tilt(accessory):
     """Define a window-covering characteristics as per page 219 of HAP spec."""
-    service = create_window_covering_service()
+    service = create_window_covering_service(accessory)
 
-    tilt_current = service.add_characteristic('horizontal-tilt.current')
+    tilt_current = service.add_char(CharacteristicsTypes.HORIZONTAL_TILT_CURRENT)
     tilt_current.value = 0
 
-    tilt_target = service.add_characteristic('horizontal-tilt.target')
+    tilt_target = service.add_char(CharacteristicsTypes.HORIZONTAL_TILT_TARGET)
     tilt_target.value = 0
 
-    return service
 
-
-def create_window_covering_service_with_v_tilt():
+def create_window_covering_service_with_v_tilt(accessory):
     """Define a window-covering characteristics as per page 219 of HAP spec."""
-    service = create_window_covering_service()
+    service = create_window_covering_service(accessory)
 
-    tilt_current = service.add_characteristic('vertical-tilt.current')
+    tilt_current = service.add_char(CharacteristicsTypes.VERTICAL_TILT_CURRENT)
     tilt_current.value = 0
 
-    tilt_target = service.add_characteristic('vertical-tilt.target')
+    tilt_target = service.add_char(CharacteristicsTypes.VERTICAL_TILT_TARGET)
     tilt_target.value = 0
-
-    return service
 
 
 async def test_change_window_cover_state(hass, utcnow):
     """Test that we can turn a HomeKit alarm on and off again."""
-    window_cover = create_window_covering_service()
-    helper = await setup_test_component(hass, [window_cover])
+    helper = await setup_test_component(hass, create_window_covering_service)
 
-    await hass.services.async_call('cover', 'open_cover', {
-        'entity_id': helper.entity_id,
-    }, blocking=True)
-    assert helper.characteristics[POSITION_TARGET].value == 100
+    await hass.services.async_call(
+        "cover", "open_cover", {"entity_id": helper.entity_id}, blocking=True
+    )
+    helper.async_assert_service_values(
+        ServicesTypes.WINDOW_COVERING,
+        {
+            CharacteristicsTypes.POSITION_TARGET: 100,
+        },
+    )
 
-    await hass.services.async_call('cover', 'close_cover', {
-        'entity_id': helper.entity_id,
-    }, blocking=True)
-    assert helper.characteristics[POSITION_TARGET].value == 0
+    await hass.services.async_call(
+        "cover", "close_cover", {"entity_id": helper.entity_id}, blocking=True
+    )
+    helper.async_assert_service_values(
+        ServicesTypes.WINDOW_COVERING,
+        {
+            CharacteristicsTypes.POSITION_TARGET: 0,
+        },
+    )
 
 
 async def test_read_window_cover_state(hass, utcnow):
     """Test that we can read the state of a HomeKit alarm accessory."""
-    window_cover = create_window_covering_service()
-    helper = await setup_test_component(hass, [window_cover])
+    helper = await setup_test_component(hass, create_window_covering_service)
 
-    helper.characteristics[POSITION_STATE].value = 0
+    await helper.async_update(
+        ServicesTypes.WINDOW_COVERING,
+        {CharacteristicsTypes.POSITION_STATE: 0},
+    )
     state = await helper.poll_and_get_state()
-    assert state.state == 'opening'
+    assert state.state == "closing"
 
-    helper.characteristics[POSITION_STATE].value = 1
+    await helper.async_update(
+        ServicesTypes.WINDOW_COVERING,
+        {CharacteristicsTypes.POSITION_STATE: 1},
+    )
     state = await helper.poll_and_get_state()
-    assert state.state == 'closing'
+    assert state.state == "opening"
 
-    helper.characteristics[POSITION_STATE].value = 2
+    await helper.async_update(
+        ServicesTypes.WINDOW_COVERING,
+        {CharacteristicsTypes.POSITION_STATE: 2},
+    )
     state = await helper.poll_and_get_state()
-    assert state.state == 'closed'
+    assert state.state == "closed"
 
-    helper.characteristics[WINDOW_OBSTRUCTION].value = True
+    await helper.async_update(
+        ServicesTypes.WINDOW_COVERING,
+        {CharacteristicsTypes.OBSTRUCTION_DETECTED: True},
+    )
     state = await helper.poll_and_get_state()
-    assert state.attributes['obstruction-detected'] is True
+    assert state.attributes["obstruction-detected"] is True
 
 
 async def test_read_window_cover_tilt_horizontal(hass, utcnow):
     """Test that horizontal tilt is handled correctly."""
-    window_cover = create_window_covering_service_with_h_tilt()
-    helper = await setup_test_component(hass, [window_cover])
+    helper = await setup_test_component(
+        hass, create_window_covering_service_with_h_tilt
+    )
 
-    helper.characteristics[H_TILT_CURRENT].value = 75
+    await helper.async_update(
+        ServicesTypes.WINDOW_COVERING,
+        {CharacteristicsTypes.HORIZONTAL_TILT_CURRENT: 75},
+    )
     state = await helper.poll_and_get_state()
-    assert state.attributes['current_tilt_position'] == 75
+    assert state.attributes["current_tilt_position"] == 75
 
 
 async def test_read_window_cover_tilt_vertical(hass, utcnow):
     """Test that vertical tilt is handled correctly."""
-    window_cover = create_window_covering_service_with_v_tilt()
-    helper = await setup_test_component(hass, [window_cover])
+    helper = await setup_test_component(
+        hass, create_window_covering_service_with_v_tilt
+    )
 
-    helper.characteristics[V_TILT_CURRENT].value = 75
+    await helper.async_update(
+        ServicesTypes.WINDOW_COVERING,
+        {CharacteristicsTypes.VERTICAL_TILT_CURRENT: 75},
+    )
     state = await helper.poll_and_get_state()
-    assert state.attributes['current_tilt_position'] == 75
+    assert state.attributes["current_tilt_position"] == 75
 
 
 async def test_write_window_cover_tilt_horizontal(hass, utcnow):
     """Test that horizontal tilt is written correctly."""
-    window_cover = create_window_covering_service_with_h_tilt()
-    helper = await setup_test_component(hass, [window_cover])
+    helper = await setup_test_component(
+        hass, create_window_covering_service_with_h_tilt
+    )
 
-    await hass.services.async_call('cover', 'set_cover_tilt_position', {
-        'entity_id': helper.entity_id,
-        'tilt_position': 90
-    }, blocking=True)
-    assert helper.characteristics[H_TILT_TARGET].value == 90
+    await hass.services.async_call(
+        "cover",
+        "set_cover_tilt_position",
+        {"entity_id": helper.entity_id, "tilt_position": 90},
+        blocking=True,
+    )
+    helper.async_assert_service_values(
+        ServicesTypes.WINDOW_COVERING,
+        {
+            CharacteristicsTypes.HORIZONTAL_TILT_TARGET: 90,
+        },
+    )
 
 
 async def test_write_window_cover_tilt_vertical(hass, utcnow):
     """Test that vertical tilt is written correctly."""
-    window_cover = create_window_covering_service_with_v_tilt()
-    helper = await setup_test_component(hass, [window_cover])
+    helper = await setup_test_component(
+        hass, create_window_covering_service_with_v_tilt
+    )
 
-    await hass.services.async_call('cover', 'set_cover_tilt_position', {
-        'entity_id': helper.entity_id,
-        'tilt_position': 90
-    }, blocking=True)
-    assert helper.characteristics[V_TILT_TARGET].value == 90
+    await hass.services.async_call(
+        "cover",
+        "set_cover_tilt_position",
+        {"entity_id": helper.entity_id, "tilt_position": 90},
+        blocking=True,
+    )
+    helper.async_assert_service_values(
+        ServicesTypes.WINDOW_COVERING,
+        {
+            CharacteristicsTypes.VERTICAL_TILT_TARGET: 90,
+        },
+    )
 
 
 async def test_window_cover_stop(hass, utcnow):
     """Test that vertical tilt is written correctly."""
-    window_cover = create_window_covering_service_with_v_tilt()
-    helper = await setup_test_component(hass, [window_cover])
+    helper = await setup_test_component(
+        hass, create_window_covering_service_with_v_tilt
+    )
 
-    await hass.services.async_call('cover', 'stop_cover', {
-        'entity_id': helper.entity_id,
-    }, blocking=True)
-    assert helper.characteristics[POSITION_HOLD].value == 1
+    await hass.services.async_call(
+        "cover", "stop_cover", {"entity_id": helper.entity_id}, blocking=True
+    )
+    helper.async_assert_service_values(
+        ServicesTypes.WINDOW_COVERING,
+        {
+            CharacteristicsTypes.POSITION_HOLD: True,
+        },
+    )
 
 
-def create_garage_door_opener_service():
+def create_garage_door_opener_service(accessory):
     """Define a garage-door-opener chars as per page 217 of HAP spec."""
-    service = FakeService('public.hap.service.garage-door-opener')
+    service = accessory.add_service(ServicesTypes.GARAGE_DOOR_OPENER)
 
-    cur_state = service.add_characteristic('door-state.current')
+    cur_state = service.add_char(CharacteristicsTypes.DOOR_STATE_CURRENT)
     cur_state.value = 0
 
-    targ_state = service.add_characteristic('door-state.target')
-    targ_state.value = 0
+    cur_state = service.add_char(CharacteristicsTypes.DOOR_STATE_TARGET)
+    cur_state.value = 0
 
-    obstruction = service.add_characteristic('obstruction-detected')
+    obstruction = service.add_char(CharacteristicsTypes.OBSTRUCTION_DETECTED)
     obstruction.value = False
 
-    name = service.add_characteristic('name')
+    name = service.add_char(CharacteristicsTypes.NAME)
     name.value = "testdevice"
 
     return service
@@ -185,41 +218,81 @@ def create_garage_door_opener_service():
 
 async def test_change_door_state(hass, utcnow):
     """Test that we can turn open and close a HomeKit garage door."""
-    door = create_garage_door_opener_service()
-    helper = await setup_test_component(hass, [door])
+    helper = await setup_test_component(hass, create_garage_door_opener_service)
 
-    await hass.services.async_call('cover', 'open_cover', {
-        'entity_id': helper.entity_id,
-    }, blocking=True)
-    assert helper.characteristics[DOOR_TARGET].value == 0
+    await hass.services.async_call(
+        "cover", "open_cover", {"entity_id": helper.entity_id}, blocking=True
+    )
+    helper.async_assert_service_values(
+        ServicesTypes.GARAGE_DOOR_OPENER,
+        {
+            CharacteristicsTypes.DOOR_STATE_TARGET: 0,
+        },
+    )
 
-    await hass.services.async_call('cover', 'close_cover', {
-        'entity_id': helper.entity_id,
-    }, blocking=True)
-    assert helper.characteristics[DOOR_TARGET].value == 1
+    await hass.services.async_call(
+        "cover", "close_cover", {"entity_id": helper.entity_id}, blocking=True
+    )
+    helper.async_assert_service_values(
+        ServicesTypes.GARAGE_DOOR_OPENER,
+        {
+            CharacteristicsTypes.DOOR_STATE_TARGET: 1,
+        },
+    )
 
 
 async def test_read_door_state(hass, utcnow):
     """Test that we can read the state of a HomeKit garage door."""
-    door = create_garage_door_opener_service()
-    helper = await setup_test_component(hass, [door])
+    helper = await setup_test_component(hass, create_garage_door_opener_service)
 
-    helper.characteristics[DOOR_CURRENT].value = 0
+    await helper.async_update(
+        ServicesTypes.GARAGE_DOOR_OPENER,
+        {CharacteristicsTypes.DOOR_STATE_CURRENT: 0},
+    )
     state = await helper.poll_and_get_state()
-    assert state.state == 'open'
+    assert state.state == "open"
 
-    helper.characteristics[DOOR_CURRENT].value = 1
+    await helper.async_update(
+        ServicesTypes.GARAGE_DOOR_OPENER,
+        {CharacteristicsTypes.DOOR_STATE_CURRENT: 1},
+    )
     state = await helper.poll_and_get_state()
-    assert state.state == 'closed'
+    assert state.state == "closed"
 
-    helper.characteristics[DOOR_CURRENT].value = 2
+    await helper.async_update(
+        ServicesTypes.GARAGE_DOOR_OPENER,
+        {CharacteristicsTypes.DOOR_STATE_CURRENT: 2},
+    )
     state = await helper.poll_and_get_state()
-    assert state.state == 'opening'
+    assert state.state == "opening"
 
-    helper.characteristics[DOOR_CURRENT].value = 3
+    await helper.async_update(
+        ServicesTypes.GARAGE_DOOR_OPENER,
+        {CharacteristicsTypes.DOOR_STATE_CURRENT: 3},
+    )
     state = await helper.poll_and_get_state()
-    assert state.state == 'closing'
+    assert state.state == "closing"
 
-    helper.characteristics[DOOR_OBSTRUCTION].value = True
+    await helper.async_update(
+        ServicesTypes.GARAGE_DOOR_OPENER,
+        {CharacteristicsTypes.OBSTRUCTION_DETECTED: True},
+    )
     state = await helper.poll_and_get_state()
-    assert state.attributes['obstruction-detected'] is True
+    assert state.attributes["obstruction-detected"] is True
+
+
+async def test_migrate_unique_id(hass, utcnow):
+    """Test a we can migrate a cover unique id."""
+    entity_registry = er.async_get(hass)
+    aid = get_next_aid()
+    cover_entry = entity_registry.async_get_or_create(
+        "cover",
+        "homekit_controller",
+        f"homekit-00:00:00:00:00:00-{aid}-8",
+    )
+    await setup_test_component(hass, create_garage_door_opener_service)
+
+    assert (
+        entity_registry.async_get(cover_entry.entity_id).unique_id
+        == f"00:00:00:00:00:00_{aid}_8"
+    )

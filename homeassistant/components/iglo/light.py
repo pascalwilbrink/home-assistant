@@ -1,30 +1,48 @@
 """Support for lights under the iGlo brand."""
-import logging
-import math
+from __future__ import annotations
 
+import math
+from typing import Any
+
+from iglo import Lamp
+from iglo.lamp import MODE_WHITE
 import voluptuous as vol
 
 from homeassistant.components.light import (
-    ATTR_BRIGHTNESS, ATTR_COLOR_TEMP, ATTR_EFFECT, ATTR_HS_COLOR,
-    SUPPORT_BRIGHTNESS, SUPPORT_COLOR_TEMP, SUPPORT_COLOR, SUPPORT_EFFECT,
-    PLATFORM_SCHEMA, Light)
+    ATTR_BRIGHTNESS,
+    ATTR_COLOR_TEMP,
+    ATTR_EFFECT,
+    ATTR_HS_COLOR,
+    PLATFORM_SCHEMA,
+    ColorMode,
+    LightEntity,
+    LightEntityFeature,
+)
 from homeassistant.const import CONF_HOST, CONF_NAME, CONF_PORT
+from homeassistant.core import HomeAssistant
 import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 import homeassistant.util.color as color_util
 
-_LOGGER = logging.getLogger(__name__)
-
-DEFAULT_NAME = 'iGlo Light'
+DEFAULT_NAME = "iGlo Light"
 DEFAULT_PORT = 8080
 
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
-    vol.Required(CONF_HOST): cv.string,
-    vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
-    vol.Optional(CONF_PORT, default=DEFAULT_PORT): cv.port,
-})
+PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
+    {
+        vol.Required(CONF_HOST): cv.string,
+        vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
+        vol.Optional(CONF_PORT, default=DEFAULT_PORT): cv.port,
+    }
+)
 
 
-def setup_platform(hass, config, add_entities, discovery_info=None):
+def setup_platform(
+    hass: HomeAssistant,
+    config: ConfigType,
+    add_entities: AddEntitiesCallback,
+    discovery_info: DiscoveryInfoType | None = None,
+) -> None:
     """Set up the iGlo lights."""
     host = config.get(CONF_HOST)
     name = config.get(CONF_NAME)
@@ -32,12 +50,15 @@ def setup_platform(hass, config, add_entities, discovery_info=None):
     add_entities([IGloLamp(name, host, port)], True)
 
 
-class IGloLamp(Light):
+class IGloLamp(LightEntity):
     """Representation of an iGlo light."""
+
+    _attr_supported_color_modes = {ColorMode.COLOR_TEMP, ColorMode.HS}
+    _attr_supported_features = LightEntityFeature.EFFECT
 
     def __init__(self, name, host, port):
         """Initialize the light."""
-        from iglo import Lamp
+
         self._name = name
         self._lamp = Lamp(0, host, port)
 
@@ -49,35 +70,45 @@ class IGloLamp(Light):
     @property
     def brightness(self):
         """Return the brightness of this light between 0..255."""
-        return int((self._lamp.state()['brightness'] / 200.0) * 255)
+        return int((self._lamp.state()["brightness"] / 200.0) * 255)
+
+    @property
+    def color_mode(self) -> ColorMode:
+        """Return the color mode of the light."""
+        if self._lamp.state()["mode"] == MODE_WHITE:
+            return ColorMode.COLOR_TEMP
+        # The iglo library reports MODE_WHITE when an effect is active, this is not
+        # supported by Home Assistant, just report ColorMode.HS
+        return ColorMode.HS
 
     @property
     def color_temp(self):
         """Return the color temperature."""
-        return color_util.color_temperature_kelvin_to_mired(
-            self._lamp.state()['white'])
+        return color_util.color_temperature_kelvin_to_mired(self._lamp.state()["white"])
 
     @property
-    def min_mireds(self):
+    def min_mireds(self) -> int:
         """Return the coldest color_temp that this light supports."""
-        return math.ceil(color_util.color_temperature_kelvin_to_mired(
-            self._lamp.max_kelvin))
+        return math.ceil(
+            color_util.color_temperature_kelvin_to_mired(self._lamp.max_kelvin)
+        )
 
     @property
-    def max_mireds(self):
+    def max_mireds(self) -> int:
         """Return the warmest color_temp that this light supports."""
-        return math.ceil(color_util.color_temperature_kelvin_to_mired(
-            self._lamp.min_kelvin))
+        return math.ceil(
+            color_util.color_temperature_kelvin_to_mired(self._lamp.min_kelvin)
+        )
 
     @property
     def hs_color(self):
         """Return the hs value."""
-        return color_util.color_RGB_to_hs(*self._lamp.state()['rgb'])
+        return color_util.color_RGB_to_hs(*self._lamp.state()["rgb"])
 
     @property
     def effect(self):
         """Return the current effect."""
-        return self._lamp.state()['effect']
+        return self._lamp.state()["effect"]
 
     @property
     def effect_list(self):
@@ -85,17 +116,11 @@ class IGloLamp(Light):
         return self._lamp.effect_list()
 
     @property
-    def supported_features(self):
-        """Flag supported features."""
-        return (SUPPORT_BRIGHTNESS | SUPPORT_COLOR_TEMP |
-                SUPPORT_COLOR | SUPPORT_EFFECT)
-
-    @property
     def is_on(self):
         """Return true if light is on."""
-        return self._lamp.state()['on']
+        return self._lamp.state()["on"]
 
-    def turn_on(self, **kwargs):
+    def turn_on(self, **kwargs: Any) -> None:
         """Turn the light on."""
         if not self.is_on:
             self._lamp.switch(True)
@@ -110,8 +135,9 @@ class IGloLamp(Light):
             return
 
         if ATTR_COLOR_TEMP in kwargs:
-            kelvin = int(color_util.color_temperature_mired_to_kelvin(
-                kwargs[ATTR_COLOR_TEMP]))
+            kelvin = int(
+                color_util.color_temperature_mired_to_kelvin(kwargs[ATTR_COLOR_TEMP])
+            )
             self._lamp.white(kelvin)
             return
 
@@ -120,6 +146,6 @@ class IGloLamp(Light):
             self._lamp.effect(effect)
             return
 
-    def turn_off(self, **kwargs):
+    def turn_off(self, **kwargs: Any) -> None:
         """Turn the light off."""
         self._lamp.switch(False)

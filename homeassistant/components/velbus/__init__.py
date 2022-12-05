@@ -1,110 +1,196 @@
 """Support for Velbus devices."""
+from __future__ import annotations
+
+from contextlib import suppress
 import logging
+import os
+import shutil
+
+from velbusaio.controller import Velbus
 import voluptuous as vol
 
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import CONF_ADDRESS, CONF_PORT, Platform
+from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.helpers import device_registry
 import homeassistant.helpers.config_validation as cv
-from homeassistant.const import EVENT_HOMEASSISTANT_STOP, CONF_PORT
-from homeassistant.helpers.discovery import load_platform
-from homeassistant.helpers.entity import Entity
+from homeassistant.helpers.device_registry import DeviceEntry
+from homeassistant.helpers.storage import STORAGE_DIR
+
+from .const import (
+    CONF_INTERFACE,
+    CONF_MEMO_TEXT,
+    DOMAIN,
+    SERVICE_CLEAR_CACHE,
+    SERVICE_SCAN,
+    SERVICE_SET_MEMO_TEXT,
+    SERVICE_SYNC,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
-DOMAIN = 'velbus'
+PLATFORMS = [
+    Platform.BINARY_SENSOR,
+    Platform.BUTTON,
+    Platform.CLIMATE,
+    Platform.COVER,
+    Platform.LIGHT,
+    Platform.SENSOR,
+    Platform.SWITCH,
+]
 
-VELBUS_MESSAGE = 'velbus.message'
 
-CONFIG_SCHEMA = vol.Schema({
-    DOMAIN: vol.Schema({
-        vol.Required(CONF_PORT): cv.string,
-    })
-}, extra=vol.ALLOW_EXTRA)
+async def velbus_connect_task(
+    controller: Velbus, hass: HomeAssistant, entry_id: str
+) -> None:
+    """Task to offload the long running connect."""
+    await controller.connect()
 
 
-async def async_setup(hass, config):
-    """Set up the Velbus platform."""
-    import velbus
-    port = config[DOMAIN].get(CONF_PORT)
-    controller = velbus.Controller(port)
+def _migrate_device_identifiers(hass: HomeAssistant, entry_id: str) -> None:
+    """Migrate old device indentifiers."""
+    dev_reg = device_registry.async_get(hass)
+    devices: list[DeviceEntry] = device_registry.async_entries_for_config_entry(
+        dev_reg, entry_id
+    )
+    for device in devices:
+        old_identifier = list(next(iter(device.identifiers)))
+        if len(old_identifier) > 2:
+            new_identifier = {(old_identifier.pop(0), old_identifier.pop(0))}
+            _LOGGER.debug(
+                "migrate identifier '%s' to '%s'", device.identifiers, new_identifier
+            )
+            dev_reg.async_update_device(device.id, new_identifiers=new_identifier)
 
-    hass.data[DOMAIN] = controller
 
-    def stop_velbus(event):
-        """Disconnect from serial port."""
-        _LOGGER.debug("Shutting down ")
-        controller.stop()
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Establish connection with velbus."""
+    hass.data.setdefault(DOMAIN, {})
 
-    hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, stop_velbus)
+    controller = Velbus(
+        entry.data[CONF_PORT],
+        cache_dir=hass.config.path(STORAGE_DIR, f"velbuscache-{entry.entry_id}"),
+    )
+    hass.data[DOMAIN][entry.entry_id] = {}
+    hass.data[DOMAIN][entry.entry_id]["cntrl"] = controller
+    hass.data[DOMAIN][entry.entry_id]["tsk"] = hass.async_create_task(
+        velbus_connect_task(controller, hass, entry.entry_id)
+    )
 
-    def callback():
-        modules = controller.get_modules()
-        discovery_info = {
-            'cover': [],
-            'switch': [],
-            'binary_sensor': [],
-            'climate': [],
-            'sensor': []
-        }
-        for module in modules:
-            for channel in range(1, module.number_of_channels() + 1):
-                for category in discovery_info:
-                    if category in module.get_categories(channel):
-                        discovery_info[category].append((
-                            module.get_module_address(),
-                            channel
-                        ))
-        load_platform(hass, 'switch', DOMAIN,
-                      discovery_info['switch'], config)
-        load_platform(hass, 'climate', DOMAIN,
-                      discovery_info['climate'], config)
-        load_platform(hass, 'binary_sensor', DOMAIN,
-                      discovery_info['binary_sensor'], config)
-        load_platform(hass, 'sensor', DOMAIN,
-                      discovery_info['sensor'], config)
-        load_platform(hass, 'cover', DOMAIN,
-                      discovery_info['cover'], config)
+    _migrate_device_identifiers(hass, entry.entry_id)
 
-    def syn_clock(self, service=None):
-        controller.sync_clock()
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    controller.scan(callback)
+    if hass.services.has_service(DOMAIN, SERVICE_SCAN):
+        return True
+
+    def check_entry_id(interface: str) -> str:
+        for entry in hass.config_entries.async_entries(DOMAIN):
+            if "port" in entry.data and entry.data["port"] == interface:
+                return entry.entry_id
+        raise vol.Invalid(
+            "The interface provided is not defined as a port in a Velbus integration"
+        )
+
+    async def scan(call: ServiceCall) -> None:
+        await hass.data[DOMAIN][call.data[CONF_INTERFACE]]["cntrl"].scan()
+
     hass.services.async_register(
-        DOMAIN, 'sync_clock', syn_clock,
-        schema=vol.Schema({}))
+        DOMAIN,
+        SERVICE_SCAN,
+        scan,
+        vol.Schema({vol.Required(CONF_INTERFACE): vol.All(cv.string, check_entry_id)}),
+    )
+
+    async def syn_clock(call: ServiceCall) -> None:
+        await hass.data[DOMAIN][call.data[CONF_INTERFACE]]["cntrl"].sync_clock()
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_SYNC,
+        syn_clock,
+        vol.Schema({vol.Required(CONF_INTERFACE): vol.All(cv.string, check_entry_id)}),
+    )
+
+    async def set_memo_text(call: ServiceCall) -> None:
+        """Handle Memo Text service call."""
+        memo_text = call.data[CONF_MEMO_TEXT]
+        memo_text.hass = hass
+        await hass.data[DOMAIN][call.data[CONF_INTERFACE]]["cntrl"].get_module(
+            call.data[CONF_ADDRESS]
+        ).set_memo_text(memo_text.async_render())
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_SET_MEMO_TEXT,
+        set_memo_text,
+        vol.Schema(
+            {
+                vol.Required(CONF_INTERFACE): vol.All(cv.string, check_entry_id),
+                vol.Required(CONF_ADDRESS): vol.All(
+                    vol.Coerce(int), vol.Range(min=0, max=255)
+                ),
+                vol.Optional(CONF_MEMO_TEXT, default=""): cv.template,
+            }
+        ),
+    )
+
+    async def clear_cache(call: ServiceCall) -> None:
+        """Handle a clear cache service call."""
+        # clear the cache
+        with suppress(FileNotFoundError):
+            if call.data[CONF_ADDRESS]:
+                await hass.async_add_executor_job(
+                    os.unlink,
+                    hass.config.path(
+                        STORAGE_DIR,
+                        f"velbuscache-{call.data[CONF_INTERFACE]}/{call.data[CONF_ADDRESS]}.p",
+                    ),
+                )
+            else:
+                await hass.async_add_executor_job(
+                    shutil.rmtree,
+                    hass.config.path(
+                        STORAGE_DIR, f"velbuscache-{call.data[CONF_INTERFACE]}/"
+                    ),
+                )
+        # call a scan to repopulate
+        await scan(call)
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_CLEAR_CACHE,
+        clear_cache,
+        vol.Schema(
+            {
+                vol.Required(CONF_INTERFACE): vol.All(cv.string, check_entry_id),
+                vol.Optional(CONF_ADDRESS): vol.All(
+                    vol.Coerce(int), vol.Range(min=0, max=255)
+                ),
+            }
+        ),
+    )
 
     return True
 
 
-class VelbusEntity(Entity):
-    """Representation of a Velbus entity."""
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Unload (close) the velbus connection."""
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    await hass.data[DOMAIN][entry.entry_id]["cntrl"].stop()
+    hass.data[DOMAIN].pop(entry.entry_id)
+    if not hass.data[DOMAIN]:
+        hass.data.pop(DOMAIN)
+        hass.services.async_remove(DOMAIN, SERVICE_SCAN)
+        hass.services.async_remove(DOMAIN, SERVICE_SYNC)
+        hass.services.async_remove(DOMAIN, SERVICE_SET_MEMO_TEXT)
+        hass.services.async_remove(DOMAIN, SERVICE_CLEAR_CACHE)
+    return unload_ok
 
-    def __init__(self, module, channel):
-        """Initialize a Velbus entity."""
-        self._module = module
-        self._channel = channel
 
-    @property
-    def unique_id(self):
-        """Get unique ID."""
-        serial = 0
-        if self._module.serial == 0:
-            serial = self._module.get_module_address()
-        else:
-            serial = self._module.serial
-        return "{}-{}".format(serial, self._channel)
-
-    @property
-    def name(self):
-        """Return the display name of this entity."""
-        return self._module.get_name(self._channel)
-
-    @property
-    def should_poll(self):
-        """Disable polling."""
-        return False
-
-    async def async_added_to_hass(self):
-        """Add listener for state changes."""
-        self._module.on_status_update(self._channel, self._on_update)
-
-    def _on_update(self, state):
-        self.schedule_update_ha_state()
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Remove the velbus entry, so we also have to cleanup the cache dir."""
+    await hass.async_add_executor_job(
+        shutil.rmtree,
+        hass.config.path(STORAGE_DIR, f"velbuscache-{entry.entry_id}"),
+    )

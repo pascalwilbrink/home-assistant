@@ -1,43 +1,44 @@
-"""Support for Abode Security System locks."""
-import logging
+"""Support for the Abode Security System locks."""
+from typing import Any
 
-from homeassistant.components.lock import LockDevice
+from abodepy.devices.lock import AbodeLock as AbodeLK
+import abodepy.helpers.constants as CONST
 
-from . import DOMAIN as ABODE_DOMAIN, AbodeDevice
+from homeassistant.components.lock import LockEntity
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-_LOGGER = logging.getLogger(__name__)
+from . import AbodeDevice, AbodeSystem
+from .const import DOMAIN
 
 
-def setup_platform(hass, config, add_entities, discovery_info=None):
+async def async_setup_entry(
+    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+) -> None:
     """Set up Abode lock devices."""
-    import abodepy.helpers.constants as CONST
+    data: AbodeSystem = hass.data[DOMAIN]
 
-    data = hass.data[ABODE_DOMAIN]
-
-    devices = []
-    for device in data.abode.get_devices(generic_type=CONST.TYPE_LOCK):
-        if data.is_excluded(device):
-            continue
-
-        devices.append(AbodeLock(data, device))
-
-    data.devices.extend(devices)
-
-    add_entities(devices)
+    async_add_entities(
+        AbodeLock(data, device)
+        for device in data.abode.get_devices(generic_type=CONST.TYPE_LOCK)
+    )
 
 
-class AbodeLock(AbodeDevice, LockDevice):
+class AbodeLock(AbodeDevice, LockEntity):
     """Representation of an Abode lock."""
 
-    def lock(self, **kwargs):
+    _device: AbodeLK
+
+    def lock(self, **kwargs: Any) -> None:
         """Lock the device."""
         self._device.lock()
 
-    def unlock(self, **kwargs):
+    def unlock(self, **kwargs: Any) -> None:
         """Unlock the device."""
         self._device.unlock()
 
     @property
-    def is_locked(self):
+    def is_locked(self) -> bool:
         """Return true if device is on."""
-        return self._device.is_locked
+        return bool(self._device.is_locked)

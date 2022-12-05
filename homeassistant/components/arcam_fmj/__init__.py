@@ -1,31 +1,25 @@
 """Arcam component."""
-import logging
 import asyncio
+from contextlib import suppress
+import logging
+from typing import Any
 
-import voluptuous as vol
-import async_timeout
-from arcam.fmj.client import Client
 from arcam.fmj import ConnectionFailed
+from arcam.fmj.client import Client
+import async_timeout
 
-from homeassistant import config_entries
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import CONF_HOST, CONF_PORT, EVENT_HOMEASSISTANT_STOP, Platform
+from homeassistant.core import HomeAssistant
 import homeassistant.helpers.config_validation as cv
-from homeassistant.helpers.typing import HomeAssistantType, ConfigType
-from homeassistant.const import (
-    EVENT_HOMEASSISTANT_STOP,
-    CONF_HOST,
-    CONF_NAME,
-    CONF_PORT,
-    CONF_SCAN_INTERVAL,
-    CONF_ZONE,
-    SERVICE_TURN_ON,
-)
+from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.helpers.typing import ConfigType
+
 from .const import (
+    DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     DOMAIN_DATA_ENTRIES,
-    DOMAIN_DATA_CONFIG,
-    DEFAULT_NAME,
-    DEFAULT_PORT,
-    DEFAULT_SCAN_INTERVAL,
+    DOMAIN_DATA_TASKS,
     SIGNAL_CLIENT_DATA,
     SIGNAL_CLIENT_STARTED,
     SIGNAL_CLIENT_STOPPED,
@@ -33,131 +27,71 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
+CONFIG_SCHEMA = cv.removed(DOMAIN, raise_if_present=False)
 
-def _optional_zone(value):
-    if value:
-        return ZONE_SCHEMA(value)
-    return ZONE_SCHEMA({})
+PLATFORMS = [Platform.MEDIA_PLAYER]
 
 
-def _zone_name_validator(config):
-    for zone, zone_config in config[CONF_ZONE].items():
-        if CONF_NAME not in zone_config:
-            zone_config[CONF_NAME] = "{} ({}:{}) - {}".format(
-                DEFAULT_NAME,
-                config[CONF_HOST],
-                config[CONF_PORT],
-                zone)
-    return config
+async def _await_cancel(task: asyncio.Task) -> None:
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
 
 
-ZONE_SCHEMA = vol.Schema(
-    {
-        vol.Optional(CONF_NAME): cv.string,
-        vol.Optional(SERVICE_TURN_ON): cv.SERVICE_SCHEMA,
-    }
-)
-
-DEVICE_SCHEMA = vol.Schema(
-    vol.All({
-        vol.Required(CONF_HOST): cv.string,
-        vol.Required(CONF_PORT, default=DEFAULT_PORT): cv.positive_int,
-        vol.Optional(
-            CONF_ZONE, default={1: _optional_zone(None)}
-        ): {vol.In([1, 2]): _optional_zone},
-        vol.Optional(
-            CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL
-        ): cv.positive_int,
-    }, _zone_name_validator)
-)
-
-CONFIG_SCHEMA = vol.Schema(
-    {DOMAIN: vol.All(cv.ensure_list, [DEVICE_SCHEMA])}, extra=vol.ALLOW_EXTRA
-)
-
-
-async def async_setup(hass: HomeAssistantType, config: ConfigType):
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the component."""
     hass.data[DOMAIN_DATA_ENTRIES] = {}
-    hass.data[DOMAIN_DATA_CONFIG] = {}
+    hass.data[DOMAIN_DATA_TASKS] = {}
 
-    for device in config[DOMAIN]:
-        hass.data[DOMAIN_DATA_CONFIG][
-            (device[CONF_HOST], device[CONF_PORT])
-        ] = device
-
-        hass.async_create_task(
-            hass.config_entries.flow.async_init(
-                DOMAIN,
-                context={"source": config_entries.SOURCE_IMPORT},
-                data={
-                    CONF_HOST: device[CONF_HOST],
-                    CONF_PORT: device[CONF_PORT],
-                },
-            )
+    async def _stop(_: Any) -> None:
+        asyncio.gather(
+            *(_await_cancel(task) for task in hass.data[DOMAIN_DATA_TASKS].values())
         )
-
-    return True
-
-
-async def async_setup_entry(
-        hass: HomeAssistantType, entry: config_entries.ConfigEntry
-):
-    """Set up an access point from a config entry."""
-    client = Client(entry.data[CONF_HOST], entry.data[CONF_PORT])
-
-    config = hass.data[DOMAIN_DATA_CONFIG].get(
-        (entry.data[CONF_HOST], entry.data[CONF_PORT]),
-        DEVICE_SCHEMA(
-            {
-                CONF_HOST: entry.data[CONF_HOST],
-                CONF_PORT: entry.data[CONF_PORT],
-            }
-        ),
-    )
-
-    hass.data[DOMAIN_DATA_ENTRIES][entry.entry_id] = {
-        "client": client,
-        "config": config,
-    }
-
-    asyncio.ensure_future(
-        _run_client(hass, client, config[CONF_SCAN_INTERVAL])
-    )
-
-    hass.async_create_task(
-        hass.config_entries.async_forward_entry_setup(entry, "media_player")
-    )
-
-    return True
-
-
-async def _run_client(hass, client, interval):
-    task = asyncio.Task.current_task()
-    run = True
-
-    async def _stop(_):
-        nonlocal run
-        run = False
-        task.cancel()
-        await task
 
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _stop)
 
-    def _listen(_):
-        hass.helpers.dispatcher.async_dispatcher_send(
-            SIGNAL_CLIENT_DATA, client.host
-        )
+    return True
 
-    while run:
+
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Set up config entry."""
+    entries = hass.data[DOMAIN_DATA_ENTRIES]
+    tasks = hass.data[DOMAIN_DATA_TASKS]
+
+    client = Client(entry.data[CONF_HOST], entry.data[CONF_PORT])
+    entries[entry.entry_id] = client
+
+    task = asyncio.create_task(_run_client(hass, client, DEFAULT_SCAN_INTERVAL))
+    tasks[entry.entry_id] = task
+
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    return True
+
+
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Cleanup before removing config entry."""
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+
+    task = hass.data[DOMAIN_DATA_TASKS].pop(entry.entry_id)
+    await _await_cancel(task)
+
+    hass.data[DOMAIN_DATA_ENTRIES].pop(entry.entry_id)
+
+    return unload_ok
+
+
+async def _run_client(hass: HomeAssistant, client: Client, interval: float) -> None:
+    def _listen(_: Any) -> None:
+        async_dispatcher_send(hass, SIGNAL_CLIENT_DATA, client.host)
+
+    while True:
         try:
-            with async_timeout.timeout(interval):
+            async with async_timeout.timeout(interval):
                 await client.start()
 
             _LOGGER.debug("Client connected %s", client.host)
-            hass.helpers.dispatcher.async_dispatcher_send(
-                SIGNAL_CLIENT_STARTED, client.host
-            )
+            async_dispatcher_send(hass, SIGNAL_CLIENT_STARTED, client.host)
 
             try:
                 with client.listen(_listen):
@@ -166,11 +100,12 @@ async def _run_client(hass, client, interval):
                 await client.stop()
 
                 _LOGGER.debug("Client disconnected %s", client.host)
-                hass.helpers.dispatcher.async_dispatcher_send(
-                    SIGNAL_CLIENT_STOPPED, client.host
-                )
+                async_dispatcher_send(hass, SIGNAL_CLIENT_STOPPED, client.host)
 
         except ConnectionFailed:
             await asyncio.sleep(interval)
         except asyncio.TimeoutError:
             continue
+        except Exception:  # pylint: disable=broad-except
+            _LOGGER.exception("Unexpected exception, aborting arcam client")
+            return

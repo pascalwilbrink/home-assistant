@@ -1,102 +1,82 @@
-"""Support for Etekcity VeSync switches."""
+"""Support for VeSync switches."""
 import logging
-import voluptuous as vol
-from homeassistant.components.switch import (SwitchDevice, PLATFORM_SCHEMA)
-from homeassistant.const import (CONF_USERNAME, CONF_PASSWORD)
-import homeassistant.helpers.config_validation as cv
+from typing import Any
 
+from homeassistant.components.switch import SwitchEntity
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+
+from .common import VeSyncDevice
+from .const import DEV_TYPE_TO_HA, DOMAIN, VS_DISCOVERY, VS_SWITCHES
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
-    vol.Required(CONF_USERNAME): cv.string,
-    vol.Required(CONF_PASSWORD): cv.string,
-})
+
+async def async_setup_entry(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up switches."""
+
+    @callback
+    def discover(devices):
+        """Add new devices to platform."""
+        _setup_entities(devices, async_add_entities)
+
+    config_entry.async_on_unload(
+        async_dispatcher_connect(hass, VS_DISCOVERY.format(VS_SWITCHES), discover)
+    )
+
+    _setup_entities(hass.data[DOMAIN][VS_SWITCHES], async_add_entities)
 
 
-def setup_platform(hass, config, add_entities, discovery_info=None):
-    """Set up the VeSync switch platform."""
-    from pyvesync_v2.vesync import VeSync
-
-    switches = []
-
-    manager = VeSync(config.get(CONF_USERNAME), config.get(CONF_PASSWORD))
-
-    if not manager.login():
-        _LOGGER.error("Unable to login to VeSync")
-        return
-
-    manager.update()
-
-    if manager.devices is not None and manager.devices:
-        if len(manager.devices) == 1:
-            count_string = 'switch'
+@callback
+def _setup_entities(devices, async_add_entities):
+    """Check if device is online and add entity."""
+    entities = []
+    for dev in devices:
+        if DEV_TYPE_TO_HA.get(dev.device_type) == "outlet":
+            entities.append(VeSyncSwitchHA(dev))
+        elif DEV_TYPE_TO_HA.get(dev.device_type) == "switch":
+            entities.append(VeSyncLightSwitch(dev))
         else:
-            count_string = 'switches'
+            _LOGGER.warning(
+                "%s - Unknown device type - %s", dev.device_name, dev.device_type
+            )
+            continue
 
-        _LOGGER.info("Discovered %d VeSync %s",
-                     len(manager.devices), count_string)
-
-        for switch in manager.devices:
-            switches.append(VeSyncSwitchHA(switch))
-            _LOGGER.info("Added a VeSync switch named '%s'",
-                         switch.device_name)
-    else:
-        _LOGGER.info("No VeSync devices found")
-
-    add_entities(switches)
+    async_add_entities(entities, update_before_add=True)
 
 
-class VeSyncSwitchHA(SwitchDevice):
+class VeSyncBaseSwitch(VeSyncDevice, SwitchEntity):
+    """Base class for VeSync switch Device Representations."""
+
+    def turn_on(self, **kwargs: Any) -> None:
+        """Turn the device on."""
+        self.device.turn_on()
+
+
+class VeSyncSwitchHA(VeSyncBaseSwitch, SwitchEntity):
     """Representation of a VeSync switch."""
 
     def __init__(self, plug):
         """Initialize the VeSync switch device."""
+        super().__init__(plug)
         self.smartplug = plug
-        self._current_power_w = None
-        self._today_energy_kwh = None
 
-    @property
-    def unique_id(self):
-        """Return the ID of this switch."""
-        return self.smartplug.cid
-
-    @property
-    def name(self):
-        """Return the name of the switch."""
-        return self.smartplug.device_name
-
-    @property
-    def current_power_w(self):
-        """Return the current power usage in W."""
-        return self._current_power_w
-
-    @property
-    def today_energy_kwh(self):
-        """Return the today total energy usage in kWh."""
-        return self._today_energy_kwh
-
-    @property
-    def available(self) -> bool:
-        """Return True if switch is available."""
-        return self.smartplug.connection_status == "online"
-
-    @property
-    def is_on(self):
-        """Return True if switch is on."""
-        return self.smartplug.device_status == "on"
-
-    def turn_on(self, **kwargs):
-        """Turn the switch on."""
-        self.smartplug.turn_on()
-
-    def turn_off(self, **kwargs):
-        """Turn the switch off."""
-        self.smartplug.turn_off()
-
-    def update(self):
-        """Handle data changes for node values."""
+    def update(self) -> None:
+        """Update outlet details and energy usage."""
         self.smartplug.update()
-        if self.smartplug.devtype == 'outlet':
-            self._current_power_w = self.smartplug.get_power()
-            self._today_energy_kwh = self.smartplug.get_kwh_today()
+        self.smartplug.update_energy()
+
+
+class VeSyncLightSwitch(VeSyncBaseSwitch, SwitchEntity):
+    """Handle representation of VeSync Light Switch."""
+
+    def __init__(self, switch):
+        """Initialize Light Switch device class."""
+        super().__init__(switch)
+        self.switch = switch

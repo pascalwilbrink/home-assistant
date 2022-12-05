@@ -1,10 +1,9 @@
 {
   "domain": "imap",
-  "name": "Imap",
-  "documentation": "https://www.home-assistant.io/components/imap",
-  "requirements": [
-    "aioimaplib==0.7.15"
-  ],
-  "dependencies": [],
-  "codeowners": []
+  "name": "IMAP",
+  "documentation": "https://www.home-assistant.io/integrations/imap",
+  "requirements": ["aioimaplib==1.0.1"],
+  "codeowners": [],
+  "iot_class": "cloud_push",
+  "loggers": ["aioimaplib"]
 }

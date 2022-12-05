@@ -1,10 +1,9 @@
 {
   "domain": "snmp",
-  "name": "Snmp",
-  "documentation": "https://www.home-assistant.io/components/snmp",
-  "requirements": [
-    "pysnmp==4.4.9"
-  ],
-  "dependencies": [],
-  "codeowners": []
+  "name": "SNMP",
+  "documentation": "https://www.home-assistant.io/integrations/snmp",
+  "requirements": ["pysnmplib==5.0.15"],
+  "codeowners": [],
+  "iot_class": "local_polling",
+  "loggers": ["pyasn1", "pysmi", "pysnmp"]
 }

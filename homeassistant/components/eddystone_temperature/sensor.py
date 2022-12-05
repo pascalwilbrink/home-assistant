@@ -3,46 +3,66 @@ Read temperature information from Eddystone beacons.
 
 Your beacons must be configured to transmit UID (for identification) and TLM
 (for temperature) frames.
-
-For more details about this platform, please refer to the documentation at
-https://home-assistant.io/components/sensor.eddystone_temperature/
 """
+from __future__ import annotations
+
 import logging
 
+# pylint: disable=import-error
+from beacontools import BeaconScanner, EddystoneFilter, EddystoneTLMFrame
 import voluptuous as vol
 
-from homeassistant.components.sensor import PLATFORM_SCHEMA
+from homeassistant.components.sensor import (
+    PLATFORM_SCHEMA,
+    SensorDeviceClass,
+    SensorEntity,
+)
 from homeassistant.const import (
-    CONF_NAME, EVENT_HOMEASSISTANT_START, EVENT_HOMEASSISTANT_STOP,
-    STATE_UNKNOWN, TEMP_CELSIUS)
+    CONF_NAME,
+    EVENT_HOMEASSISTANT_START,
+    EVENT_HOMEASSISTANT_STOP,
+    STATE_UNKNOWN,
+    TEMP_CELSIUS,
+)
+from homeassistant.core import Event, HomeAssistant
 import homeassistant.helpers.config_validation as cv
-from homeassistant.helpers.entity import Entity
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
 _LOGGER = logging.getLogger(__name__)
 
-CONF_BEACONS = 'beacons'
-CONF_BT_DEVICE_ID = 'bt_device_id'
-CONF_INSTANCE = 'instance'
-CONF_NAMESPACE = 'namespace'
+CONF_BEACONS = "beacons"
+CONF_BT_DEVICE_ID = "bt_device_id"
+CONF_INSTANCE = "instance"
+CONF_NAMESPACE = "namespace"
 
-BEACON_SCHEMA = vol.Schema({
-    vol.Required(CONF_NAMESPACE): cv.string,
-    vol.Required(CONF_INSTANCE): cv.string,
-    vol.Optional(CONF_NAME): cv.string
-})
+BEACON_SCHEMA = vol.Schema(
+    {
+        vol.Required(CONF_NAMESPACE): cv.string,
+        vol.Required(CONF_INSTANCE): cv.string,
+        vol.Optional(CONF_NAME): cv.string,
+    }
+)
 
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
-    vol.Optional(CONF_BT_DEVICE_ID, default=0): cv.positive_int,
-    vol.Required(CONF_BEACONS): vol.Schema({cv.string: BEACON_SCHEMA}),
-})
+PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
+    {
+        vol.Optional(CONF_BT_DEVICE_ID, default=0): cv.positive_int,
+        vol.Required(CONF_BEACONS): vol.Schema({cv.string: BEACON_SCHEMA}),
+    }
+)
 
 
-def setup_platform(hass, config, add_entities, discovery_info=None):
+def setup_platform(
+    hass: HomeAssistant,
+    config: ConfigType,
+    add_entities: AddEntitiesCallback,
+    discovery_info: DiscoveryInfoType | None = None,
+) -> None:
     """Validate configuration, create devices and start monitoring thread."""
-    bt_device_id = config.get("bt_device_id")
+    bt_device_id: int = config[CONF_BT_DEVICE_ID]
 
-    beacons = config.get(CONF_BEACONS)
-    devices = []
+    beacons: dict[str, dict[str, str]] = config[CONF_BEACONS]
+    devices: list[EddystoneTemp] = []
 
     for dev_name, properties in beacons.items():
         namespace = get_from_conf(properties, CONF_NAMESPACE, 20)
@@ -52,18 +72,18 @@ def setup_platform(hass, config, add_entities, discovery_info=None):
         if instance is None or namespace is None:
             _LOGGER.error("Skipping %s", dev_name)
             continue
-        else:
-            devices.append(EddystoneTemp(name, namespace, instance))
+
+        devices.append(EddystoneTemp(name, namespace, instance))
 
     if devices:
         mon = Monitor(hass, devices, bt_device_id)
 
-        def monitor_stop(_service_or_event):
+        def monitor_stop(event: Event) -> None:
             """Stop the monitor thread."""
             _LOGGER.info("Stopping scanner for Eddystone beacons")
             mon.stop()
 
-        def monitor_start(_service_or_event):
+        def monitor_start(event: Event) -> None:
             """Start the monitor thread."""
             _LOGGER.info("Starting scanner for Eddystone beacons")
             mon.start()
@@ -76,52 +96,47 @@ def setup_platform(hass, config, add_entities, discovery_info=None):
         _LOGGER.warning("No devices were added")
 
 
-def get_from_conf(config, config_key, length):
+def get_from_conf(config: dict[str, str], config_key: str, length: int) -> str | None:
     """Retrieve value from config and validate length."""
-    string = config.get(config_key)
+    string = config[config_key]
     if len(string) != length:
-        _LOGGER.error("Error in config parameter %s: Must be exactly %d "
-                      "bytes. Device will not be added", config_key, length/2)
+        _LOGGER.error(
+            "Error in configuration parameter %s: Must be exactly %d "
+            "bytes. Device will not be added",
+            config_key,
+            length / 2,
+        )
         return None
     return string
 
 
-class EddystoneTemp(Entity):
+class EddystoneTemp(SensorEntity):
     """Representation of a temperature sensor."""
 
-    def __init__(self, name, namespace, instance):
+    _attr_device_class = SensorDeviceClass.TEMPERATURE
+    _attr_native_unit_of_measurement = TEMP_CELSIUS
+    _attr_should_poll = False
+
+    def __init__(self, name: str, namespace: str, instance: str) -> None:
         """Initialize a sensor."""
-        self._name = name
+        self._attr_name = name
         self.namespace = namespace
         self.instance = instance
         self.bt_addr = None
         self.temperature = STATE_UNKNOWN
 
     @property
-    def name(self):
-        """Return the name of the sensor."""
-        return self._name
-
-    @property
-    def state(self):
+    def native_value(self):
         """Return the state of the device."""
         return self.temperature
-
-    @property
-    def unit_of_measurement(self):
-        """Return the unit the value is expressed in."""
-        return TEMP_CELSIUS
-
-    @property
-    def should_poll(self):
-        """Return the polling state."""
-        return False
 
 
 class Monitor:
     """Continuously scan for BLE advertisements."""
 
-    def __init__(self, hass, devices, bt_device_id):
+    def __init__(
+        self, hass: HomeAssistant, devices: list[EddystoneTemp], bt_device_id: int
+    ) -> None:
         """Construct interface object."""
         self.hass = hass
 
@@ -133,45 +148,47 @@ class Monitor:
         def callback(bt_addr, _, packet, additional_info):
             """Handle new packets."""
             self.process_packet(
-                additional_info['namespace'], additional_info['instance'],
-                packet.temperature)
+                additional_info["namespace"],
+                additional_info["instance"],
+                packet.temperature,
+            )
 
-        from beacontools import (  # pylint: disable=import-error
-            BeaconScanner, EddystoneFilter, EddystoneTLMFrame)
-        device_filters = [EddystoneFilter(d.namespace, d.instance)
-                          for d in devices]
+        device_filters = [EddystoneFilter(d.namespace, d.instance) for d in devices]
 
         self.scanner = BeaconScanner(
-            callback, bt_device_id, device_filters, EddystoneTLMFrame)
+            callback, bt_device_id, device_filters, EddystoneTLMFrame
+        )
         self.scanning = False
 
-    def start(self):
+    def start(self) -> None:
         """Continuously scan for BLE advertisements."""
         if not self.scanning:
             self.scanner.start()
             self.scanning = True
         else:
-            _LOGGER.debug(
-                "start() called, but scanner is already running")
+            _LOGGER.debug("start() called, but scanner is already running")
 
-    def process_packet(self, namespace, instance, temperature):
+    def process_packet(self, namespace, instance, temperature) -> None:
         """Assign temperature to device."""
-        _LOGGER.debug("Received temperature for <%s,%s>: %d",
-                      namespace, instance, temperature)
+        _LOGGER.debug(
+            "Received temperature for <%s,%s>: %d", namespace, instance, temperature
+        )
 
         for dev in self.devices:
-            if dev.namespace == namespace and dev.instance == instance:
-                if dev.temperature != temperature:
-                    dev.temperature = temperature
-                    dev.schedule_update_ha_state()
+            if (
+                dev.namespace == namespace
+                and dev.instance == instance
+                and dev.temperature != temperature
+            ):
+                dev.temperature = temperature
+                dev.schedule_update_ha_state()
 
-    def stop(self):
+    def stop(self) -> None:
         """Signal runner to stop and join thread."""
         if self.scanning:
-            _LOGGER.debug("Stopping...")
+            _LOGGER.debug("Stopping")
             self.scanner.stop()
             _LOGGER.debug("Stopped")
             self.scanning = False
         else:
-            _LOGGER.debug(
-                "stop() called but scanner was not running")
+            _LOGGER.debug("stop() called but scanner was not running")

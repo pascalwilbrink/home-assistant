@@ -1,22 +1,37 @@
 """Support for control of ElkM1 tasks ("macros")."""
+from __future__ import annotations
+
+from typing import Any
+
+from elkm1_lib.tasks import Task
+
 from homeassistant.components.scene import Scene
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from . import DOMAIN as ELK_DOMAIN, ElkEntity, create_elk_entities
+from . import ElkAttachedEntity, ElkEntity, create_elk_entities
+from .const import DOMAIN
 
 
-async def async_setup_platform(
-        hass, config, async_add_entities, discovery_info=None):
+async def async_setup_entry(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
     """Create the Elk-M1 scene platform."""
-    if discovery_info is None:
-        return
-    elk = hass.data[ELK_DOMAIN]['elk']
-    entities = create_elk_entities(hass, elk.tasks, 'task', ElkTask, [])
-    async_add_entities(entities, True)
+    elk_data = hass.data[DOMAIN][config_entry.entry_id]
+    entities: list[ElkEntity] = []
+    elk = elk_data["elk"]
+    create_elk_entities(elk_data, elk.tasks, "task", ElkTask, entities)
+    async_add_entities(entities)
 
 
-class ElkTask(ElkEntity, Scene):
+class ElkTask(ElkAttachedEntity, Scene):
     """Elk-M1 task as scene."""
 
-    async def async_activate(self):
+    _element: Task
+
+    async def async_activate(self, **kwargs: Any) -> None:
         """Activate the task."""
         self._element.activate()

@@ -1,195 +1,173 @@
 """Support for switches which integrates with other components."""
-import logging
+from __future__ import annotations
+
+from typing import Any
 
 import voluptuous as vol
 
-from homeassistant.core import callback
 from homeassistant.components.switch import (
-    ENTITY_ID_FORMAT, SwitchDevice, PLATFORM_SCHEMA)
+    ENTITY_ID_FORMAT,
+    PLATFORM_SCHEMA,
+    SwitchEntity,
+)
 from homeassistant.const import (
-    ATTR_FRIENDLY_NAME, CONF_VALUE_TEMPLATE, CONF_ICON_TEMPLATE,
-    CONF_ENTITY_PICTURE_TEMPLATE, STATE_OFF, STATE_ON, ATTR_ENTITY_ID,
-    CONF_SWITCHES, EVENT_HOMEASSISTANT_START)
+    ATTR_ENTITY_ID,
+    ATTR_FRIENDLY_NAME,
+    CONF_SWITCHES,
+    CONF_UNIQUE_ID,
+    CONF_VALUE_TEMPLATE,
+    STATE_OFF,
+    STATE_ON,
+)
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import TemplateError
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.entity import async_generate_entity_id
-from homeassistant.helpers.event import async_track_state_change
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.script import Script
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
-_LOGGER = logging.getLogger(__name__)
-_VALID_STATES = [STATE_ON, STATE_OFF, 'true', 'false']
+from .const import DOMAIN
+from .template_entity import (
+    TEMPLATE_ENTITY_COMMON_SCHEMA_LEGACY,
+    TemplateEntity,
+    rewrite_common_legacy_to_modern_conf,
+)
 
-ON_ACTION = 'turn_on'
-OFF_ACTION = 'turn_off'
+_VALID_STATES = [STATE_ON, STATE_OFF, "true", "false"]
 
-SWITCH_SCHEMA = vol.Schema({
-    vol.Required(CONF_VALUE_TEMPLATE): cv.template,
-    vol.Optional(CONF_ICON_TEMPLATE): cv.template,
-    vol.Optional(CONF_ENTITY_PICTURE_TEMPLATE): cv.template,
-    vol.Required(ON_ACTION): cv.SCRIPT_SCHEMA,
-    vol.Required(OFF_ACTION): cv.SCRIPT_SCHEMA,
-    vol.Optional(ATTR_FRIENDLY_NAME): cv.string,
-    vol.Optional(ATTR_ENTITY_ID): cv.entity_ids
-})
+ON_ACTION = "turn_on"
+OFF_ACTION = "turn_off"
 
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
-    vol.Required(CONF_SWITCHES): cv.schema_with_slug_keys(SWITCH_SCHEMA),
-})
+SWITCH_SCHEMA = vol.All(
+    cv.deprecated(ATTR_ENTITY_ID),
+    vol.Schema(
+        {
+            vol.Optional(CONF_VALUE_TEMPLATE): cv.template,
+            vol.Required(ON_ACTION): cv.SCRIPT_SCHEMA,
+            vol.Required(OFF_ACTION): cv.SCRIPT_SCHEMA,
+            vol.Optional(ATTR_FRIENDLY_NAME): cv.string,
+            vol.Optional(ATTR_ENTITY_ID): cv.entity_ids,
+            vol.Optional(CONF_UNIQUE_ID): cv.string,
+        }
+    ).extend(TEMPLATE_ENTITY_COMMON_SCHEMA_LEGACY.schema),
+)
+
+PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
+    {vol.Required(CONF_SWITCHES): cv.schema_with_slug_keys(SWITCH_SCHEMA)}
+)
 
 
-async def async_setup_platform(hass, config, async_add_entities,
-                               discovery_info=None):
-    """Set up the Template switch."""
+async def _async_create_entities(hass, config):
+    """Create the Template switches."""
     switches = []
 
-    for device, device_config in config[CONF_SWITCHES].items():
-        friendly_name = device_config.get(ATTR_FRIENDLY_NAME, device)
-        state_template = device_config[CONF_VALUE_TEMPLATE]
-        icon_template = device_config.get(CONF_ICON_TEMPLATE)
-        entity_picture_template = device_config.get(
-            CONF_ENTITY_PICTURE_TEMPLATE)
-        on_action = device_config[ON_ACTION]
-        off_action = device_config[OFF_ACTION]
-        entity_ids = (device_config.get(ATTR_ENTITY_ID) or
-                      state_template.extract_entities())
-
-        state_template.hass = hass
-
-        if icon_template is not None:
-            icon_template.hass = hass
-
-        if entity_picture_template is not None:
-            entity_picture_template.hass = hass
+    for object_id, entity_config in config[CONF_SWITCHES].items():
+        entity_config = rewrite_common_legacy_to_modern_conf(entity_config)
+        unique_id = entity_config.get(CONF_UNIQUE_ID)
 
         switches.append(
             SwitchTemplate(
-                hass, device, friendly_name, state_template,
-                icon_template, entity_picture_template, on_action,
-                off_action, entity_ids)
+                hass,
+                object_id,
+                entity_config,
+                unique_id,
             )
-    if not switches:
-        _LOGGER.error("No switches added")
-        return False
+        )
 
-    async_add_entities(switches)
-    return True
+    return switches
 
 
-class SwitchTemplate(SwitchDevice):
+async def async_setup_platform(
+    hass: HomeAssistant,
+    config: ConfigType,
+    async_add_entities: AddEntitiesCallback,
+    discovery_info: DiscoveryInfoType | None = None,
+) -> None:
+    """Set up the template switches."""
+    async_add_entities(await _async_create_entities(hass, config))
+
+
+class SwitchTemplate(TemplateEntity, SwitchEntity, RestoreEntity):
     """Representation of a Template switch."""
 
-    def __init__(self, hass, device_id, friendly_name, state_template,
-                 icon_template, entity_picture_template, on_action,
-                 off_action, entity_ids):
+    _attr_should_poll = False
+
+    def __init__(
+        self,
+        hass,
+        object_id,
+        config,
+        unique_id,
+    ):
         """Initialize the Template switch."""
-        self.hass = hass
+        super().__init__(
+            hass, config=config, fallback_name=object_id, unique_id=unique_id
+        )
         self.entity_id = async_generate_entity_id(
-            ENTITY_ID_FORMAT, device_id, hass=hass)
-        self._name = friendly_name
-        self._template = state_template
-        self._on_script = Script(hass, on_action)
-        self._off_script = Script(hass, off_action)
+            ENTITY_ID_FORMAT, object_id, hass=hass
+        )
+        friendly_name = self._attr_name
+        self._template = config.get(CONF_VALUE_TEMPLATE)
+        self._on_script = Script(hass, config[ON_ACTION], friendly_name, DOMAIN)
+        self._off_script = Script(hass, config[OFF_ACTION], friendly_name, DOMAIN)
+        self._state: bool | None = False
+
+    @callback
+    def _update_state(self, result):
+        super()._update_state(result)
+        if isinstance(result, TemplateError):
+            self._state = None
+            return
+
+        if isinstance(result, bool):
+            self._state = result
+            return
+
+        if isinstance(result, str):
+            self._state = result.lower() in ("true", STATE_ON)
+            return
+
         self._state = False
-        self._icon_template = icon_template
-        self._entity_picture_template = entity_picture_template
-        self._icon = None
-        self._entity_picture = None
-        self._entities = entity_ids
 
-    async def async_added_to_hass(self):
+    async def async_added_to_hass(self) -> None:
         """Register callbacks."""
-        @callback
-        def template_switch_state_listener(entity, old_state, new_state):
-            """Handle target device state changes."""
-            self.async_schedule_update_ha_state(True)
+        if self._template is None:
 
-        @callback
-        def template_switch_startup(event):
-            """Update template on startup."""
-            async_track_state_change(
-                self.hass, self._entities, template_switch_state_listener)
+            # restore state after startup
+            await super().async_added_to_hass()
+            if state := await self.async_get_last_state():
+                self._state = state.state == STATE_ON
 
-            self.async_schedule_update_ha_state(True)
+            # no need to listen for events
+        else:
+            self.add_template_attribute(
+                "_state", self._template, None, self._update_state
+            )
 
-        self.hass.bus.async_listen_once(
-            EVENT_HOMEASSISTANT_START, template_switch_startup)
-
-    @property
-    def name(self):
-        """Return the name of the switch."""
-        return self._name
+        await super().async_added_to_hass()
 
     @property
-    def is_on(self):
+    def is_on(self) -> bool | None:
         """Return true if device is on."""
         return self._state
 
-    @property
-    def should_poll(self):
-        """Return the polling state."""
-        return False
-
-    @property
-    def available(self):
-        """If switch is available."""
-        return self._state is not None
-
-    @property
-    def icon(self):
-        """Return the icon to use in the frontend, if any."""
-        return self._icon
-
-    @property
-    def entity_picture(self):
-        """Return the entity_picture to use in the frontend, if any."""
-        return self._entity_picture
-
-    async def async_turn_on(self, **kwargs):
+    async def async_turn_on(self, **kwargs: Any) -> None:
         """Fire the on action."""
-        await self._on_script.async_run(context=self._context)
+        await self.async_run_script(self._on_script, context=self._context)
+        if self._template is None:
+            self._state = True
+            self.async_write_ha_state()
 
-    async def async_turn_off(self, **kwargs):
+    async def async_turn_off(self, **kwargs: Any) -> None:
         """Fire the off action."""
-        await self._off_script.async_run(context=self._context)
+        await self.async_run_script(self._off_script, context=self._context)
+        if self._template is None:
+            self._state = False
+            self.async_write_ha_state()
 
-    async def async_update(self):
-        """Update the state from the template."""
-        try:
-            state = self._template.async_render().lower()
-
-            if state in _VALID_STATES:
-                self._state = state in ('true', STATE_ON)
-            else:
-                _LOGGER.error(
-                    'Received invalid switch is_on state: %s. Expected: %s',
-                    state, ', '.join(_VALID_STATES))
-                self._state = None
-
-        except TemplateError as ex:
-            _LOGGER.error(ex)
-            self._state = None
-
-        for property_name, template in (
-                ('_icon', self._icon_template),
-                ('_entity_picture', self._entity_picture_template)):
-            if template is None:
-                continue
-
-            try:
-                setattr(self, property_name, template.async_render())
-            except TemplateError as ex:
-                friendly_property_name = property_name[1:].replace('_', ' ')
-                if ex.args and ex.args[0].startswith(
-                        "UndefinedError: 'None' has no attribute"):
-                    # Common during HA startup - so just a warning
-                    _LOGGER.warning('Could not render %s template %s,'
-                                    ' the state is unknown.',
-                                    friendly_property_name, self._name)
-                    return
-
-                try:
-                    setattr(self, property_name,
-                            getattr(super(), property_name))
-                except AttributeError:
-                    _LOGGER.error('Could not render %s template %s: %s',
-                                  friendly_property_name, self._name, ex)
+    @property
+    def assumed_state(self) -> bool:
+        """State is assumed, if no template given."""
+        return self._template is None

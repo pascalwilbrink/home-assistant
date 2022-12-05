@@ -1,10 +1,9 @@
 {
   "domain": "lightwave",
   "name": "Lightwave",
-  "documentation": "https://www.home-assistant.io/components/lightwave",
-  "requirements": [
-    "lightwave==0.15"
-  ],
-  "dependencies": [],
-  "codeowners": []
+  "documentation": "https://www.home-assistant.io/integrations/lightwave",
+  "requirements": ["lightwave==0.20"],
+  "codeowners": [],
+  "iot_class": "assumed_state",
+  "loggers": ["lightwave"]
 }

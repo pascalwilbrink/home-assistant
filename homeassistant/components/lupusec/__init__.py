@@ -1,39 +1,53 @@
 """Support for Lupusec Home Security system."""
 import logging
 
+import lupupy
+from lupupy.exceptions import LupusecException
 import voluptuous as vol
 
-from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers import discovery
-from homeassistant.const import (CONF_USERNAME, CONF_PASSWORD,
-                                 CONF_NAME, CONF_IP_ADDRESS)
+from homeassistant.components import persistent_notification
+from homeassistant.const import (
+    CONF_IP_ADDRESS,
+    CONF_NAME,
+    CONF_PASSWORD,
+    CONF_USERNAME,
+    Platform,
+)
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import config_validation as cv, discovery
 from homeassistant.helpers.entity import Entity
+from homeassistant.helpers.typing import ConfigType
 
 _LOGGER = logging.getLogger(__name__)
 
-DOMAIN = 'lupusec'
+DOMAIN = "lupusec"
 
-NOTIFICATION_ID = 'lupusec_notification'
-NOTIFICATION_TITLE = 'Lupusec Security Setup'
+NOTIFICATION_ID = "lupusec_notification"
+NOTIFICATION_TITLE = "Lupusec Security Setup"
 
-CONFIG_SCHEMA = vol.Schema({
-    DOMAIN: vol.Schema({
-        vol.Required(CONF_USERNAME): cv.string,
-        vol.Required(CONF_PASSWORD): cv.string,
-        vol.Required(CONF_IP_ADDRESS): cv.string,
-        vol.Optional(CONF_NAME): cv.string,
-    }),
-}, extra=vol.ALLOW_EXTRA)
+CONFIG_SCHEMA = vol.Schema(
+    {
+        DOMAIN: vol.Schema(
+            {
+                vol.Required(CONF_USERNAME): cv.string,
+                vol.Required(CONF_PASSWORD): cv.string,
+                vol.Required(CONF_IP_ADDRESS): cv.string,
+                vol.Optional(CONF_NAME): cv.string,
+            }
+        )
+    },
+    extra=vol.ALLOW_EXTRA,
+)
 
 LUPUSEC_PLATFORMS = [
-    'alarm_control_panel', 'binary_sensor', 'switch'
+    Platform.ALARM_CONTROL_PANEL,
+    Platform.BINARY_SENSOR,
+    Platform.SWITCH,
 ]
 
 
-def setup(hass, config):
+def setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up Lupusec component."""
-    from lupupy.exceptions import LupusecException
-
     conf = config[DOMAIN]
     username = conf[CONF_USERNAME]
     password = conf[CONF_PASSWORD]
@@ -45,12 +59,12 @@ def setup(hass, config):
     except LupusecException as ex:
         _LOGGER.error(ex)
 
-        hass.components.persistent_notification.create(
-            'Error: {}<br />'
-            'You will need to restart hass after fixing.'
-            ''.format(ex),
+        persistent_notification.create(
+            hass,
+            f"Error: {ex}<br />You will need to restart hass after fixing.",
             title=NOTIFICATION_TITLE,
-            notification_id=NOTIFICATION_ID)
+            notification_id=NOTIFICATION_ID,
+        )
         return False
 
     for platform in LUPUSEC_PLATFORMS:
@@ -64,7 +78,6 @@ class LupusecSystem:
 
     def __init__(self, username, password, ip_address, name):
         """Initialize the system."""
-        import lupupy
         self.lupusec = lupupy.Lupusec(username, password, ip_address)
         self.name = name
 

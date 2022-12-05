@@ -1,48 +1,127 @@
 """Support for Solax inverter via local API."""
+from __future__ import annotations
+
 import asyncio
-
 from datetime import timedelta
-import logging
 
-import voluptuous as vol
+from solax import RealTimeAPI
+from solax.discovery import InverterError
+from solax.units import Units
 
-from homeassistant.const import (
-        TEMP_CELSIUS,
-        CONF_IP_ADDRESS
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorEntityDescription,
+    SensorStateClass,
 )
-from homeassistant.helpers.entity import Entity
-import homeassistant.helpers.config_validation as cv
-from homeassistant.components.sensor import PLATFORM_SCHEMA
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import (
+    ELECTRIC_CURRENT_AMPERE,
+    ELECTRIC_POTENTIAL_VOLT,
+    ENERGY_KILO_WATT_HOUR,
+    FREQUENCY_HERTZ,
+    PERCENTAGE,
+    POWER_WATT,
+    TEMP_CELSIUS,
+)
+from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import PlatformNotReady
+from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_time_interval
 
-_LOGGER = logging.getLogger(__name__)
+from .const import DOMAIN, MANUFACTURER
 
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
-    vol.Required(CONF_IP_ADDRESS): cv.string,
-})
-
+DEFAULT_PORT = 80
 SCAN_INTERVAL = timedelta(seconds=30)
 
 
-async def async_setup_platform(hass, config, async_add_entities,
-                               discovery_info=None):
-    """Platform setup."""
-    import solax
+SENSOR_DESCRIPTIONS: dict[tuple[Units, bool], SensorEntityDescription] = {
+    (Units.C, False): SensorEntityDescription(
+        key=f"{Units.C}_{False}",
+        device_class=SensorDeviceClass.TEMPERATURE,
+        native_unit_of_measurement=TEMP_CELSIUS,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    (Units.KWH, False): SensorEntityDescription(
+        key=f"{Units.KWH}_{False}",
+        device_class=SensorDeviceClass.ENERGY,
+        native_unit_of_measurement=ENERGY_KILO_WATT_HOUR,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    (Units.KWH, True): SensorEntityDescription(
+        key=f"{Units.KWH}_{True}",
+        device_class=SensorDeviceClass.ENERGY,
+        native_unit_of_measurement=ENERGY_KILO_WATT_HOUR,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+    ),
+    (Units.V, False): SensorEntityDescription(
+        key=f"{Units.V}_{False}",
+        device_class=SensorDeviceClass.VOLTAGE,
+        native_unit_of_measurement=ELECTRIC_POTENTIAL_VOLT,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    (Units.A, False): SensorEntityDescription(
+        key=f"{Units.A}_{False}",
+        device_class=SensorDeviceClass.CURRENT,
+        native_unit_of_measurement=ELECTRIC_CURRENT_AMPERE,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    (Units.W, False): SensorEntityDescription(
+        key=f"{Units.W}_{False}",
+        device_class=SensorDeviceClass.POWER,
+        native_unit_of_measurement=POWER_WATT,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    (Units.PERCENT, False): SensorEntityDescription(
+        key=f"{Units.PERCENT}_{False}",
+        device_class=SensorDeviceClass.BATTERY,
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    (Units.HZ, False): SensorEntityDescription(
+        key=f"{Units.HZ}_{False}",
+        device_class=SensorDeviceClass.FREQUENCY,
+        native_unit_of_measurement=FREQUENCY_HERTZ,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    (Units.NONE, False): SensorEntityDescription(
+        key=f"{Units.NONE}_{False}",
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+}
 
-    api = solax.RealTimeAPI(config[CONF_IP_ADDRESS])
-    endpoint = RealTimeDataEndpoint(hass, api)
+
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Entry setup."""
+    api: RealTimeAPI = hass.data[DOMAIN][entry.entry_id]
     resp = await api.get_data()
     serial = resp.serial_number
+    version = resp.version
+    endpoint = RealTimeDataEndpoint(hass, api)
     hass.async_add_job(endpoint.async_refresh)
     async_track_time_interval(hass, endpoint.async_refresh, SCAN_INTERVAL)
     devices = []
-    for sensor in solax.INVERTER_SENSORS:
-        idx, unit = solax.INVERTER_SENSORS[sensor]
-        if unit == 'C':
-            unit = TEMP_CELSIUS
-        uid = '{}-{}'.format(serial, idx)
-        devices.append(Inverter(uid, serial, sensor, unit))
+    for sensor, (idx, measurement) in api.inverter.sensor_map().items():
+        description = SENSOR_DESCRIPTIONS[(measurement.unit, measurement.is_monotonic)]
+
+        uid = f"{serial}-{idx}"
+        devices.append(
+            Inverter(
+                api.inverter.manufacturer,
+                uid,
+                serial,
+                version,
+                sensor,
+                description.native_unit_of_measurement,
+                description.state_class,
+                description.device_class,
+            )
+        )
     endpoint.sensors = devices
     async_add_entities(devices)
 
@@ -50,28 +129,26 @@ async def async_setup_platform(hass, config, async_add_entities,
 class RealTimeDataEndpoint:
     """Representation of a Sensor."""
 
-    def __init__(self, hass, api):
+    def __init__(self, hass: HomeAssistant, api: RealTimeAPI) -> None:
         """Initialize the sensor."""
         self.hass = hass
         self.api = api
         self.ready = asyncio.Event()
-        self.sensors = []
+        self.sensors: list[Inverter] = []
 
     async def async_refresh(self, now=None):
         """Fetch new state data for the sensor.
 
         This is the only method that should fetch new data for Home Assistant.
         """
-        from solax import SolaxRequestError
-
         try:
             api_response = await self.api.get_data()
             self.ready.set()
-        except SolaxRequestError:
+        except InverterError as err:
             if now is not None:
                 self.ready.clear()
-            else:
-                raise PlatformNotReady
+                return
+            raise PlatformNotReady from err
         data = api_response.data
         for sensor in self.sensors:
             if sensor.key in data:
@@ -79,38 +156,38 @@ class RealTimeDataEndpoint:
                 sensor.async_schedule_update_ha_state()
 
 
-class Inverter(Entity):
+class Inverter(SensorEntity):
     """Class for a sensor."""
 
-    def __init__(self, uid, serial, key, unit):
+    _attr_should_poll = False
+
+    def __init__(
+        self,
+        manufacturer,
+        uid,
+        serial,
+        version,
+        key,
+        unit,
+        state_class=None,
+        device_class=None,
+    ):
         """Initialize an inverter sensor."""
-        self.uid = uid
-        self.serial = serial
+        self._attr_unique_id = uid
+        self._attr_name = f"{manufacturer} {serial} {key}"
+        self._attr_native_unit_of_measurement = unit
+        self._attr_state_class = state_class
+        self._attr_device_class = device_class
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, serial)},
+            manufacturer=MANUFACTURER,
+            name=f"{manufacturer} {serial}",
+            sw_version=version,
+        )
         self.key = key
         self.value = None
-        self.unit = unit
 
     @property
-    def state(self):
+    def native_value(self):
         """State of this inverter attribute."""
         return self.value
-
-    @property
-    def unique_id(self):
-        """Return unique id."""
-        return self.uid
-
-    @property
-    def name(self):
-        """Name of this inverter attribute."""
-        return 'Solax {} {}'.format(self.serial, self.key)
-
-    @property
-    def unit_of_measurement(self):
-        """Return the unit of measurement."""
-        return self.unit
-
-    @property
-    def should_poll(self):
-        """No polling needed."""
-        return False

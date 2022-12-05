@@ -1,119 +1,164 @@
 """Support for UK Met Office weather service."""
-import logging
+from __future__ import annotations
 
-import voluptuous as vol
+from typing import Any
 
-from homeassistant.components.weather import PLATFORM_SCHEMA, WeatherEntity
-from homeassistant.const import (
-    CONF_API_KEY, CONF_LATITUDE, CONF_LONGITUDE, CONF_NAME, TEMP_CELSIUS)
-from homeassistant.helpers import config_validation as cv
+from datapoint.Timestep import Timestep
 
-from .sensor import ATTRIBUTION, CONDITION_CLASSES, MetOfficeCurrentData
+from homeassistant.components.weather import (
+    ATTR_FORECAST_CONDITION,
+    ATTR_FORECAST_NATIVE_TEMP,
+    ATTR_FORECAST_NATIVE_WIND_SPEED,
+    ATTR_FORECAST_PRECIPITATION_PROBABILITY,
+    ATTR_FORECAST_WIND_BEARING,
+    Forecast,
+    WeatherEntity,
+)
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import UnitOfPressure, UnitOfSpeed, UnitOfTemperature
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import (
+    CoordinatorEntity,
+    DataUpdateCoordinator,
+)
 
-_LOGGER = logging.getLogger(__name__)
-
-DEFAULT_NAME = "Met Office"
-
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
-    vol.Required(CONF_API_KEY): cv.string,
-    vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
-    vol.Inclusive(CONF_LATITUDE, 'coordinates',
-                  'Latitude and longitude must exist together'): cv.latitude,
-    vol.Inclusive(CONF_LONGITUDE, 'coordinates',
-                  'Latitude and longitude must exist together'): cv.longitude,
-})
-
-
-def setup_platform(hass, config, add_entities, discovery_info=None):
-    """Set up the Met Office weather platform."""
-    import datapoint as dp
-
-    name = config.get(CONF_NAME)
-    datapoint = dp.connection(api_key=config.get(CONF_API_KEY))
-
-    latitude = config.get(CONF_LATITUDE, hass.config.latitude)
-    longitude = config.get(CONF_LONGITUDE, hass.config.longitude)
-
-    if None in (latitude, longitude):
-        _LOGGER.error("Latitude or longitude not set in Home Assistant config")
-        return
-
-    try:
-        site = datapoint.get_nearest_site(
-            latitude=latitude, longitude=longitude)
-    except dp.exceptions.APIException as err:
-        _LOGGER.error("Received error from Met Office Datapoint: %s", err)
-        return
-
-    if not site:
-        _LOGGER.error("Unable to get nearest Met Office forecast site")
-        return
-
-    data = MetOfficeCurrentData(hass, datapoint, site)
-    try:
-        data.update()
-    except (ValueError, dp.exceptions.APIException) as err:
-        _LOGGER.error("Received error from Met Office Datapoint: %s", err)
-        return
-
-    add_entities([MetOfficeWeather(site, data, name)], True)
+from . import get_device_info
+from .const import (
+    ATTRIBUTION,
+    CONDITION_CLASSES,
+    DOMAIN,
+    METOFFICE_COORDINATES,
+    METOFFICE_DAILY_COORDINATOR,
+    METOFFICE_HOURLY_COORDINATOR,
+    METOFFICE_NAME,
+    MODE_DAILY,
+)
+from .data import MetOfficeData
 
 
-class MetOfficeWeather(WeatherEntity):
+async def async_setup_entry(
+    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+) -> None:
+    """Set up the Met Office weather sensor platform."""
+    hass_data = hass.data[DOMAIN][entry.entry_id]
+
+    async_add_entities(
+        [
+            MetOfficeWeather(hass_data[METOFFICE_HOURLY_COORDINATOR], hass_data, True),
+            MetOfficeWeather(hass_data[METOFFICE_DAILY_COORDINATOR], hass_data, False),
+        ],
+        False,
+    )
+
+
+def _build_forecast_data(timestep: Timestep) -> Forecast:
+    data = Forecast(datetime=timestep.date.isoformat())
+    if timestep.weather:
+        data[ATTR_FORECAST_CONDITION] = _get_weather_condition(timestep.weather.value)
+    if timestep.precipitation:
+        data[ATTR_FORECAST_PRECIPITATION_PROBABILITY] = timestep.precipitation.value
+    if timestep.temperature:
+        data[ATTR_FORECAST_NATIVE_TEMP] = timestep.temperature.value
+    if timestep.wind_direction:
+        data[ATTR_FORECAST_WIND_BEARING] = timestep.wind_direction.value
+    if timestep.wind_speed:
+        data[ATTR_FORECAST_NATIVE_WIND_SPEED] = timestep.wind_speed.value
+    return data
+
+
+def _get_weather_condition(metoffice_code: str) -> str | None:
+    for hass_name, metoffice_codes in CONDITION_CLASSES.items():
+        if metoffice_code in metoffice_codes:
+            return hass_name
+    return None
+
+
+class MetOfficeWeather(
+    CoordinatorEntity[DataUpdateCoordinator[MetOfficeData]], WeatherEntity
+):
     """Implementation of a Met Office weather condition."""
 
-    def __init__(self, site, data, name):
-        """Initialise the platform with a data instance and site."""
-        self._name = name
-        self.data = data
-        self.site = site
+    _attr_attribution = ATTRIBUTION
+    _attr_has_entity_name = True
 
-    def update(self):
-        """Update current conditions."""
-        self.data.update()
+    _attr_native_temperature_unit = UnitOfTemperature.CELSIUS
+    _attr_native_pressure_unit = UnitOfPressure.HPA
+    _attr_native_wind_speed_unit = UnitOfSpeed.MILES_PER_HOUR
+
+    def __init__(
+        self,
+        coordinator: DataUpdateCoordinator[MetOfficeData],
+        hass_data: dict[str, Any],
+        use_3hourly: bool,
+    ) -> None:
+        """Initialise the platform with a data instance."""
+        super().__init__(coordinator)
+
+        self._attr_device_info = get_device_info(
+            coordinates=hass_data[METOFFICE_COORDINATES], name=hass_data[METOFFICE_NAME]
+        )
+        self._attr_name = "3-Hourly" if use_3hourly else "Daily"
+        self._attr_unique_id = hass_data[METOFFICE_COORDINATES]
+        if not use_3hourly:
+            self._attr_unique_id = f"{self._attr_unique_id}_{MODE_DAILY}"
 
     @property
-    def name(self):
-        """Return the name of the sensor."""
-        return '{} {}'.format(self._name, self.site.name)
-
-    @property
-    def condition(self):
+    def condition(self) -> str | None:
         """Return the current condition."""
-        return [k for k, v in CONDITION_CLASSES.items() if
-                self.data.data.weather.value in v][0]
-
-    @property
-    def temperature(self):
-        """Return the platform temperature."""
-        return self.data.data.temperature.value
-
-    @property
-    def temperature_unit(self):
-        """Return the unit of measurement."""
-        return TEMP_CELSIUS
-
-    @property
-    def pressure(self):
-        """Return the mean sea-level pressure."""
+        if self.coordinator.data.now:
+            return _get_weather_condition(self.coordinator.data.now.weather.value)
         return None
 
     @property
-    def humidity(self):
+    def native_temperature(self) -> float | None:
+        """Return the platform temperature."""
+        weather_now = self.coordinator.data.now
+        if weather_now.temperature:
+            value = weather_now.temperature.value
+            return float(value) if value is not None else None
+        return None
+
+    @property
+    def native_pressure(self) -> float | None:
+        """Return the mean sea-level pressure."""
+        weather_now = self.coordinator.data.now
+        if weather_now and weather_now.pressure:
+            value = weather_now.pressure.value
+            return float(value) if value is not None else None
+        return None
+
+    @property
+    def humidity(self) -> float | None:
         """Return the relative humidity."""
-        return self.data.data.humidity.value
+        weather_now = self.coordinator.data.now
+        if weather_now and weather_now.humidity:
+            value = weather_now.humidity.value
+            return float(value) if value is not None else None
+        return None
 
     @property
-    def wind_speed(self):
+    def native_wind_speed(self) -> float | None:
         """Return the wind speed."""
-        return self.data.data.wind_speed.value
+        weather_now = self.coordinator.data.now
+        if weather_now and weather_now.wind_speed:
+            value = weather_now.wind_speed.value
+            return float(value) if value is not None else None
+        return None
 
     @property
-    def wind_bearing(self):
+    def wind_bearing(self) -> str | None:
         """Return the wind bearing."""
-        return self.data.data.wind_direction.value
+        weather_now = self.coordinator.data.now
+        if weather_now and weather_now.wind_direction:
+            value = weather_now.wind_direction.value
+            return str(value) if value is not None else None
+        return None
 
     @property
-    def attribution(self):
-        """Return the attribution."""
-        return ATTRIBUTION
+    def forecast(self) -> list[Forecast] | None:
+        """Return the forecast array."""
+        return [
+            _build_forecast_data(timestep)
+            for timestep in self.coordinator.data.forecast
+        ]

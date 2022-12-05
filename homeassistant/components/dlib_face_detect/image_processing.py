@@ -1,25 +1,34 @@
 """Component that will help set the Dlib face detect processing."""
-import logging
+from __future__ import annotations
+
 import io
 
-from homeassistant.core import split_entity_id
+import face_recognition  # pylint: disable=import-error
+
+from homeassistant.components.image_processing import ImageProcessingFaceEntity
+from homeassistant.const import ATTR_LOCATION, CONF_ENTITY_ID, CONF_NAME, CONF_SOURCE
+from homeassistant.core import HomeAssistant, split_entity_id
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
+
 # pylint: disable=unused-import
-from homeassistant.components.image_processing import PLATFORM_SCHEMA  # noqa
-from homeassistant.components.image_processing import (
-    ImageProcessingFaceEntity, CONF_SOURCE, CONF_ENTITY_ID, CONF_NAME)
-
-_LOGGER = logging.getLogger(__name__)
-
-ATTR_LOCATION = 'location'
+from homeassistant.components.image_processing import (  # noqa: F401, isort:skip
+    PLATFORM_SCHEMA,
+)
 
 
-def setup_platform(hass, config, add_entities, discovery_info=None):
+def setup_platform(
+    hass: HomeAssistant,
+    config: ConfigType,
+    add_entities: AddEntitiesCallback,
+    discovery_info: DiscoveryInfoType | None = None,
+) -> None:
     """Set up the Dlib Face detection platform."""
     entities = []
     for camera in config[CONF_SOURCE]:
-        entities.append(DlibFaceDetectEntity(
-            camera[CONF_ENTITY_ID], camera.get(CONF_NAME)
-        ))
+        entities.append(
+            DlibFaceDetectEntity(camera[CONF_ENTITY_ID], camera.get(CONF_NAME))
+        )
 
     add_entities(entities)
 
@@ -36,8 +45,7 @@ class DlibFaceDetectEntity(ImageProcessingFaceEntity):
         if name:
             self._name = name
         else:
-            self._name = "Dlib Face {0}".format(
-                split_entity_id(camera_entity)[1])
+            self._name = f"Dlib Face {split_entity_id(camera_entity)[1]}"
 
     @property
     def camera_entity(self):
@@ -51,16 +59,14 @@ class DlibFaceDetectEntity(ImageProcessingFaceEntity):
 
     def process_image(self, image):
         """Process image."""
-        import face_recognition  # pylint: disable=import-error
 
         fak_file = io.BytesIO(image)
-        fak_file.name = 'snapshot.jpg'
+        fak_file.name = "snapshot.jpg"
         fak_file.seek(0)
 
         image = face_recognition.load_image_file(fak_file)
         face_locations = face_recognition.face_locations(image)
 
-        face_locations = [{ATTR_LOCATION: location}
-                          for location in face_locations]
+        face_locations = [{ATTR_LOCATION: location} for location in face_locations]
 
         self.process_faces(face_locations, len(face_locations))

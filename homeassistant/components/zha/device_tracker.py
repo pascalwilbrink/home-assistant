@@ -1,73 +1,74 @@
 """Support for the ZHA platform."""
-import logging
+from __future__ import annotations
+
+import functools
 import time
-from homeassistant.components.device_tracker import (
-    SOURCE_TYPE_ROUTER, DOMAIN
-)
-from homeassistant.components.device_tracker.config_entry import (
-    ScannerEntity
-)
-from homeassistant.core import callback
+
+from homeassistant.components.device_tracker import ScannerEntity, SourceType
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import Platform
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
+from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+
+from .core import discovery
 from .core.const import (
-    DATA_ZHA, DATA_ZHA_DISPATCHERS, ZHA_DISCOVERY_NEW,
-    POWER_CONFIGURATION_CHANNEL, SIGNAL_ATTR_UPDATED
+    CHANNEL_POWER_CONFIGURATION,
+    DATA_ZHA,
+    SIGNAL_ADD_ENTITIES,
+    SIGNAL_ATTR_UPDATED,
 )
+from .core.registries import ZHA_ENTITIES
 from .entity import ZhaEntity
-from .sensor import battery_percentage_remaining_formatter
+from .sensor import Battery
 
-_LOGGER = logging.getLogger(__name__)
+STRICT_MATCH = functools.partial(ZHA_ENTITIES.strict_match, Platform.DEVICE_TRACKER)
 
 
-async def async_setup_entry(hass, config_entry, async_add_entities):
+async def async_setup_entry(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
     """Set up the Zigbee Home Automation device tracker from config entry."""
-    async def async_discover(discovery_info):
-        await _async_setup_entities(hass, config_entry, async_add_entities,
-                                    [discovery_info])
+    entities_to_create = hass.data[DATA_ZHA][Platform.DEVICE_TRACKER]
 
     unsub = async_dispatcher_connect(
-        hass, ZHA_DISCOVERY_NEW.format(DOMAIN), async_discover)
-    hass.data[DATA_ZHA][DATA_ZHA_DISPATCHERS].append(unsub)
-
-    device_trackers = hass.data.get(DATA_ZHA, {}).get(DOMAIN)
-    if device_trackers is not None:
-        await _async_setup_entities(hass, config_entry, async_add_entities,
-                                    device_trackers.values())
-        del hass.data[DATA_ZHA][DOMAIN]
-
-
-async def _async_setup_entities(hass, config_entry, async_add_entities,
-                                discovery_infos):
-    """Set up the ZHA device trackers."""
-    entities = []
-    for discovery_info in discovery_infos:
-        entities.append(ZHADeviceScannerEntity(**discovery_info))
-
-    async_add_entities(entities, update_before_add=True)
+        hass,
+        SIGNAL_ADD_ENTITIES,
+        functools.partial(
+            discovery.async_add_entities, async_add_entities, entities_to_create
+        ),
+    )
+    config_entry.async_on_unload(unsub)
 
 
+@STRICT_MATCH(channel_names=CHANNEL_POWER_CONFIGURATION)
 class ZHADeviceScannerEntity(ScannerEntity, ZhaEntity):
     """Represent a tracked device."""
 
-    def __init__(self, **kwargs):
+    _attr_should_poll = True  # BaseZhaEntity defaults to False
+
+    def __init__(self, unique_id, zha_device, channels, **kwargs):
         """Initialize the ZHA device tracker."""
-        super().__init__(**kwargs)
-        self._battery_channel = self.cluster_channels.get(
-            POWER_CONFIGURATION_CHANNEL)
+        super().__init__(unique_id, zha_device, channels, **kwargs)
+        self._battery_channel = self.cluster_channels.get(CHANNEL_POWER_CONFIGURATION)
         self._connected = False
         self._keepalive_interval = 60
-        self._should_poll = True
         self._battery_level = None
 
-    async def async_added_to_hass(self):
+    async def async_added_to_hass(self) -> None:
         """Run when about to be added to hass."""
         await super().async_added_to_hass()
         if self._battery_channel:
-            await self.async_accept_signal(
-                self._battery_channel, SIGNAL_ATTR_UPDATED,
-                self.async_battery_percentage_remaining_updated)
+            self.async_accept_signal(
+                self._battery_channel,
+                SIGNAL_ATTR_UPDATED,
+                self.async_battery_percentage_remaining_updated,
+            )
 
-    async def async_update(self):
+    async def async_update(self) -> None:
         """Handle polling."""
         if self.zha_device.last_seen is None:
             self._connected = False
@@ -84,17 +85,19 @@ class ZHADeviceScannerEntity(ScannerEntity, ZhaEntity):
         return self._connected
 
     @property
-    def source_type(self):
+    def source_type(self) -> SourceType:
         """Return the source type, eg gps or router, of the device."""
-        return SOURCE_TYPE_ROUTER
+        return SourceType.ROUTER
 
     @callback
-    def async_battery_percentage_remaining_updated(self, value):
+    def async_battery_percentage_remaining_updated(self, attr_id, attr_name, value):
         """Handle tracking."""
-        _LOGGER.debug('battery_percentage_remaining updated: %s', value)
+        if attr_name != "battery_percentage_remaining":
+            return
+        self.debug("battery_percentage_remaining updated: %s", value)
         self._connected = True
-        self._battery_level = battery_percentage_remaining_formatter(value)
-        self.async_schedule_update_ha_state()
+        self._battery_level = Battery.formatter(value)
+        self.async_write_ha_state()
 
     @property
     def battery_level(self):
@@ -103,3 +106,19 @@ class ZHADeviceScannerEntity(ScannerEntity, ZhaEntity):
         Percentage from 0-100.
         """
         return self._battery_level
+
+    @property  # type: ignore[misc]
+    def device_info(  # pylint: disable=overridden-final-method
+        self,
+    ) -> DeviceInfo:
+        """Return device info."""
+        # We opt ZHA device tracker back into overriding this method because
+        # it doesn't track IP-based devices.
+        # Call Super because ScannerEntity overrode it.
+        return super(ZhaEntity, self).device_info
+
+    @property
+    def unique_id(self) -> str:
+        """Return unique ID."""
+        # Call Super because ScannerEntity overrode it.
+        return super(ZhaEntity, self).unique_id

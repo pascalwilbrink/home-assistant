@@ -1,28 +1,41 @@
 """Support for EnOcean binary sensors."""
-import logging
+from __future__ import annotations
 
+from enocean.utils import combine_hex
 import voluptuous as vol
 
-from homeassistant.components import enocean
 from homeassistant.components.binary_sensor import (
-    DEVICE_CLASSES_SCHEMA, PLATFORM_SCHEMA, BinarySensorDevice)
+    DEVICE_CLASSES_SCHEMA,
+    PLATFORM_SCHEMA,
+    BinarySensorEntity,
+)
 from homeassistant.const import CONF_DEVICE_CLASS, CONF_ID, CONF_NAME
+from homeassistant.core import HomeAssistant
 import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
-_LOGGER = logging.getLogger(__name__)
+from .device import EnOceanEntity
 
-DEFAULT_NAME = 'EnOcean binary sensor'
-DEPENDENCIES = ['enocean']
-EVENT_BUTTON_PRESSED = 'button_pressed'
+DEFAULT_NAME = "EnOcean binary sensor"
+DEPENDENCIES = ["enocean"]
+EVENT_BUTTON_PRESSED = "button_pressed"
 
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
-    vol.Required(CONF_ID): vol.All(cv.ensure_list, [vol.Coerce(int)]),
-    vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
-    vol.Optional(CONF_DEVICE_CLASS): DEVICE_CLASSES_SCHEMA,
-})
+PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
+    {
+        vol.Required(CONF_ID): vol.All(cv.ensure_list, [vol.Coerce(int)]),
+        vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
+        vol.Optional(CONF_DEVICE_CLASS): DEVICE_CLASSES_SCHEMA,
+    }
+)
 
 
-def setup_platform(hass, config, add_entities, discovery_info=None):
+def setup_platform(
+    hass: HomeAssistant,
+    config: ConfigType,
+    add_entities: AddEntitiesCallback,
+    discovery_info: DiscoveryInfoType | None = None,
+) -> None:
     """Set up the Binary Sensor platform for EnOcean."""
     dev_id = config.get(CONF_ID)
     dev_name = config.get(CONF_NAME)
@@ -31,7 +44,7 @@ def setup_platform(hass, config, add_entities, discovery_info=None):
     add_entities([EnOceanBinarySensor(dev_id, dev_name, device_class)])
 
 
-class EnOceanBinarySensor(enocean.EnOceanDevice, BinarySensorDevice):
+class EnOceanBinarySensor(EnOceanEntity, BinarySensorEntity):
     """Representation of EnOcean binary sensors such as wall switches.
 
     Supported EEPs (EnOcean Equipment Profiles):
@@ -45,6 +58,7 @@ class EnOceanBinarySensor(enocean.EnOceanDevice, BinarySensorDevice):
         self._device_class = device_class
         self.which = -1
         self.onoff = -1
+        self._attr_unique_id = f"{combine_hex(dev_id)}-{device_class}"
 
     @property
     def name(self):
@@ -97,8 +111,12 @@ class EnOceanBinarySensor(enocean.EnOceanDevice, BinarySensorDevice):
         elif action == 0x15:
             self.which = 10
             self.onoff = 1
-        self.hass.bus.fire(EVENT_BUTTON_PRESSED,
-                           {'id': self.dev_id,
-                            'pushed': pushed,
-                            'which': self.which,
-                            'onoff': self.onoff})
+        self.hass.bus.fire(
+            EVENT_BUTTON_PRESSED,
+            {
+                "id": self.dev_id,
+                "pushed": pushed,
+                "which": self.which,
+                "onoff": self.onoff,
+            },
+        )

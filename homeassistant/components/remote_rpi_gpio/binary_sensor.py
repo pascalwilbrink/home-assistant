@@ -1,87 +1,90 @@
 """Support for binary sensor using RPi GPIO."""
-import logging
-
-import voluptuous as vol
+from __future__ import annotations
 
 import requests
+import voluptuous as vol
 
+from homeassistant.components.binary_sensor import PLATFORM_SCHEMA, BinarySensorEntity
 from homeassistant.const import CONF_HOST
-from homeassistant.components.binary_sensor import (
-    BinarySensorDevice, PLATFORM_SCHEMA)
-
+from homeassistant.core import HomeAssistant
 import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
-from . import (CONF_BOUNCETIME, CONF_PULL_MODE, CONF_INVERT_LOGIC,
-               DEFAULT_BOUNCETIME, DEFAULT_INVERT_LOGIC, DEFAULT_PULL_MODE)
+from . import (
+    CONF_BOUNCETIME,
+    CONF_INVERT_LOGIC,
+    CONF_PULL_MODE,
+    DEFAULT_BOUNCETIME,
+    DEFAULT_INVERT_LOGIC,
+    DEFAULT_PULL_MODE,
+)
 from .. import remote_rpi_gpio
 
-_LOGGER = logging.getLogger(__name__)
+CONF_PORTS = "ports"
 
-CONF_PORTS = 'ports'
+_SENSORS_SCHEMA = vol.Schema({cv.positive_int: cv.string})
 
-_SENSORS_SCHEMA = vol.Schema({
-    cv.positive_int: cv.string,
-})
-
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
-    vol.Required(CONF_HOST): cv.string,
-    vol.Required(CONF_PORTS): _SENSORS_SCHEMA,
-    vol.Optional(CONF_INVERT_LOGIC,
-                 default=DEFAULT_INVERT_LOGIC): cv.boolean,
-    vol.Optional(CONF_BOUNCETIME,
-                 default=DEFAULT_BOUNCETIME): cv.positive_int,
-    vol.Optional(CONF_PULL_MODE,
-                 default=DEFAULT_PULL_MODE): cv.string,
-})
+PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
+    {
+        vol.Required(CONF_HOST): cv.string,
+        vol.Required(CONF_PORTS): _SENSORS_SCHEMA,
+        vol.Optional(CONF_INVERT_LOGIC, default=DEFAULT_INVERT_LOGIC): cv.boolean,
+        vol.Optional(CONF_BOUNCETIME, default=DEFAULT_BOUNCETIME): cv.positive_int,
+        vol.Optional(CONF_PULL_MODE, default=DEFAULT_PULL_MODE): cv.string,
+    }
+)
 
 
-def setup_platform(hass, config, add_entities, discovery_info=None):
+def setup_platform(
+    hass: HomeAssistant,
+    config: ConfigType,
+    add_entities: AddEntitiesCallback,
+    discovery_info: DiscoveryInfoType | None = None,
+) -> None:
     """Set up the Raspberry PI GPIO devices."""
-    address = config['host']
+    address = config["host"]
     invert_logic = config[CONF_INVERT_LOGIC]
     pull_mode = config[CONF_PULL_MODE]
-    ports = config['ports']
-    bouncetime = config[CONF_BOUNCETIME]/1000
+    ports = config["ports"]
+    bouncetime = config[CONF_BOUNCETIME] / 1000
 
     devices = []
     for port_num, port_name in ports.items():
         try:
-            button = remote_rpi_gpio.setup_input(address,
-                                                 port_num,
-                                                 pull_mode,
-                                                 bouncetime)
-        except (ValueError, IndexError, KeyError, IOError):
+            remote_sensor = remote_rpi_gpio.setup_input(
+                address, port_num, pull_mode, bouncetime
+            )
+        except (ValueError, IndexError, KeyError, OSError):
             return
-        new_sensor = RemoteRPiGPIOBinarySensor(port_name, button, invert_logic)
+        new_sensor = RemoteRPiGPIOBinarySensor(port_name, remote_sensor, invert_logic)
         devices.append(new_sensor)
 
     add_entities(devices, True)
 
 
-class RemoteRPiGPIOBinarySensor(BinarySensorDevice):
+class RemoteRPiGPIOBinarySensor(BinarySensorEntity):
     """Represent a binary sensor that uses a Remote Raspberry Pi GPIO."""
 
-    def __init__(self, name, button, invert_logic):
+    _attr_should_poll = False
+
+    def __init__(self, name, sensor, invert_logic):
         """Initialize the RPi binary sensor."""
         self._name = name
         self._invert_logic = invert_logic
         self._state = False
-        self._button = button
+        self._sensor = sensor
 
-    async def async_added_to_hass(self):
+    async def async_added_to_hass(self) -> None:
         """Run when entity about to be added to hass."""
+
         def read_gpio():
             """Read state from GPIO."""
-            self._state = remote_rpi_gpio.read_input(self._button)
+            self._state = remote_rpi_gpio.read_input(self._sensor)
             self.schedule_update_ha_state()
 
-        self._button.when_released = read_gpio
-        self._button.when_pressed = read_gpio
-
-    @property
-    def should_poll(self):
-        """No polling needed."""
-        return False
+        self._sensor.when_deactivated = read_gpio
+        self._sensor.when_activated = read_gpio
 
     @property
     def name(self):
@@ -98,9 +101,9 @@ class RemoteRPiGPIOBinarySensor(BinarySensorDevice):
         """Return the class of this sensor, from DEVICE_CLASSES."""
         return
 
-    def update(self):
+    def update(self) -> None:
         """Update the GPIO state."""
         try:
-            self._state = remote_rpi_gpio.read_input(self._button)
+            self._state = remote_rpi_gpio.read_input(self._sensor)
         except requests.exceptions.ConnectionError:
             return

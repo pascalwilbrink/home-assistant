@@ -1,43 +1,40 @@
 """Support for the Geofency device tracker platform."""
-import logging
-
-from homeassistant.const import (
-    ATTR_LATITUDE,
-    ATTR_LONGITUDE,
-)
-from homeassistant.core import callback
-from homeassistant.components.device_tracker import SOURCE_TYPE_GPS
-from homeassistant.components.device_tracker.config_entry import (
-    TrackerEntity
-)
-from homeassistant.helpers.dispatcher import async_dispatcher_connect
-from homeassistant.helpers.restore_state import RestoreEntity
+from homeassistant.components.device_tracker import SourceType, TrackerEntity
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import ATTR_LATITUDE, ATTR_LONGITUDE
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
+from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import RestoreEntity
 
 from . import DOMAIN as GF_DOMAIN, TRACKER_UPDATE
 
-_LOGGER = logging.getLogger(__name__)
 
-
-async def async_setup_entry(hass, config_entry, async_add_entities):
+async def async_setup_entry(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
     """Set up Geofency config entry."""
+
     @callback
     def _receive_data(device, gps, location_name, attributes):
         """Fire HA event to set location."""
-        if device in hass.data[GF_DOMAIN]['devices']:
+        if device in hass.data[GF_DOMAIN]["devices"]:
             return
 
-        hass.data[GF_DOMAIN]['devices'].add(device)
+        hass.data[GF_DOMAIN]["devices"].add(device)
 
-        async_add_entities([GeofencyEntity(
-            device, gps, location_name, attributes
-        )])
+        async_add_entities([GeofencyEntity(device, gps, location_name, attributes)])
 
-    hass.data[GF_DOMAIN]['unsub_device_tracker'][config_entry.entry_id] = \
-        async_dispatcher_connect(hass, TRACKER_UPDATE, _receive_data)
+    hass.data[GF_DOMAIN]["unsub_device_tracker"][
+        config_entry.entry_id
+    ] = async_dispatcher_connect(hass, TRACKER_UPDATE, _receive_data)
 
     # Restore previously loaded devices
-    dev_reg = await device_registry.async_get_registry(hass)
+    dev_reg = device_registry.async_get(hass)
     dev_ids = {
         identifier[1]
         for device in dev_reg.devices.values()
@@ -46,10 +43,8 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     }
 
     if dev_ids:
-        hass.data[GF_DOMAIN]['devices'].update(dev_ids)
+        hass.data[GF_DOMAIN]["devices"].update(dev_ids)
         async_add_entities(GeofencyEntity(dev_id) for dev_id in dev_ids)
-
-    return True
 
 
 class GeofencyEntity(TrackerEntity, RestoreEntity):
@@ -65,7 +60,7 @@ class GeofencyEntity(TrackerEntity, RestoreEntity):
         self._unique_id = device
 
     @property
-    def device_state_attributes(self):
+    def extra_state_attributes(self):
         """Return device specific attributes."""
         return self._attributes
 
@@ -90,51 +85,42 @@ class GeofencyEntity(TrackerEntity, RestoreEntity):
         return self._name
 
     @property
-    def should_poll(self):
-        """No polling needed."""
-        return False
-
-    @property
     def unique_id(self):
         """Return the unique ID."""
         return self._unique_id
 
     @property
-    def device_info(self):
+    def device_info(self) -> DeviceInfo:
         """Return the device info."""
-        return {
-            'name': self._name,
-            'identifiers': {(GF_DOMAIN, self._unique_id)},
-        }
+        return DeviceInfo(identifiers={(GF_DOMAIN, self._unique_id)}, name=self._name)
 
     @property
-    def source_type(self):
+    def source_type(self) -> SourceType:
         """Return the source type, eg gps or router, of the device."""
-        return SOURCE_TYPE_GPS
+        return SourceType.GPS
 
-    async def async_added_to_hass(self):
+    async def async_added_to_hass(self) -> None:
         """Register state update callback."""
         await super().async_added_to_hass()
         self._unsub_dispatcher = async_dispatcher_connect(
-            self.hass, TRACKER_UPDATE, self._async_receive_data)
+            self.hass, TRACKER_UPDATE, self._async_receive_data
+        )
 
         if self._attributes:
             return
 
-        state = await self.async_get_last_state()
-
-        if state is None:
+        if (state := await self.async_get_last_state()) is None:
             self._gps = (None, None)
             return
 
         attr = state.attributes
         self._gps = (attr.get(ATTR_LATITUDE), attr.get(ATTR_LONGITUDE))
 
-    async def async_will_remove_from_hass(self):
+    async def async_will_remove_from_hass(self) -> None:
         """Clean up after entity before removal."""
         await super().async_will_remove_from_hass()
         self._unsub_dispatcher()
-        self.hass.data[GF_DOMAIN]['devices'].remove(self._unique_id)
+        self.hass.data[GF_DOMAIN]["devices"].remove(self._unique_id)
 
     @callback
     def _async_receive_data(self, device, gps, location_name, attributes):

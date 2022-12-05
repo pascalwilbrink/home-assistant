@@ -1,97 +1,96 @@
-"""
-Support for MQTT vacuums.
+"""Support for MQTT vacuums."""
+from __future__ import annotations
 
-For more details about this platform, please refer to the documentation at
-https://www.home-assistant.io/components/vacuum.mqtt/
-"""
-import logging
+import functools
 
 import voluptuous as vol
 
-from homeassistant.components.vacuum import DOMAIN
-from homeassistant.components.mqtt import ATTR_DISCOVERY_HASH
-from homeassistant.components.mqtt.discovery import (
-    MQTT_DISCOVERY_NEW, clear_discovery_hash)
-from homeassistant.helpers.dispatcher import async_dispatcher_connect
+from homeassistant.components import vacuum
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
-_LOGGER = logging.getLogger(__name__)
+from ..mixins import async_setup_entry_helper, warn_for_legacy_schema
+from .schema import CONF_SCHEMA, LEGACY, MQTT_VACUUM_SCHEMA, STATE
+from .schema_legacy import (
+    DISCOVERY_SCHEMA_LEGACY,
+    PLATFORM_SCHEMA_LEGACY,
+    PLATFORM_SCHEMA_LEGACY_MODERN,
+    async_setup_entity_legacy,
+)
+from .schema_state import (
+    DISCOVERY_SCHEMA_STATE,
+    PLATFORM_SCHEMA_STATE,
+    PLATFORM_SCHEMA_STATE_MODERN,
+    async_setup_entity_state,
+)
 
-CONF_SCHEMA = 'schema'
-LEGACY = 'legacy'
-STATE = 'state'
 
-
-def validate_mqtt_vacuum(value):
+def validate_mqtt_vacuum_discovery(config_value: ConfigType) -> ConfigType:
     """Validate MQTT vacuum schema."""
-    from . import schema_legacy
-    from . import schema_state
+    schemas = {LEGACY: DISCOVERY_SCHEMA_LEGACY, STATE: DISCOVERY_SCHEMA_STATE}
+    config: ConfigType = schemas[config_value[CONF_SCHEMA]](config_value)
+    return config
 
+
+# Configuring MQTT Vacuums under the vacuum platform key was deprecated in HA Core 2022.6
+def validate_mqtt_vacuum(config_value: ConfigType) -> ConfigType:
+    """Validate MQTT vacuum schema (deprecated)."""
+    schemas = {LEGACY: PLATFORM_SCHEMA_LEGACY, STATE: PLATFORM_SCHEMA_STATE}
+    config: ConfigType = schemas[config_value[CONF_SCHEMA]](config_value)
+    return config
+
+
+def validate_mqtt_vacuum_modern(config_value: ConfigType) -> ConfigType:
+    """Validate MQTT vacuum modern schema."""
     schemas = {
-        LEGACY: schema_legacy.PLATFORM_SCHEMA_LEGACY,
-        STATE: schema_state.PLATFORM_SCHEMA_STATE,
+        LEGACY: PLATFORM_SCHEMA_LEGACY_MODERN,
+        STATE: PLATFORM_SCHEMA_STATE_MODERN,
     }
-    return schemas[value[CONF_SCHEMA]](value)
+    config: ConfigType = schemas[config_value[CONF_SCHEMA]](config_value)
+    return config
 
 
-def services_to_strings(services, service_to_string):
-    """Convert SUPPORT_* service bitmask to list of service strings."""
-    strings = []
-    for service in service_to_string:
-        if service & services:
-            strings.append(service_to_string[service])
-    return strings
+DISCOVERY_SCHEMA = vol.All(
+    MQTT_VACUUM_SCHEMA.extend({}, extra=vol.ALLOW_EXTRA), validate_mqtt_vacuum_discovery
+)
+
+# Configuring MQTT Vacuums under the vacuum platform key was deprecated in HA Core 2022.6
+# Setup for the legacy YAML format was removed in HA Core 2022.12
+PLATFORM_SCHEMA = vol.All(
+    warn_for_legacy_schema(vacuum.DOMAIN),
+)
+
+PLATFORM_SCHEMA_MODERN = vol.All(
+    MQTT_VACUUM_SCHEMA.extend({}, extra=vol.ALLOW_EXTRA), validate_mqtt_vacuum_modern
+)
 
 
-def strings_to_services(strings, string_to_service):
-    """Convert service strings to SUPPORT_* service bitmask."""
-    services = 0
-    for string in strings:
-        services |= string_to_service[string]
-    return services
+async def async_setup_entry(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up MQTT vacuum through configuration.yaml and dynamically through MQTT discovery."""
+    setup = functools.partial(
+        _async_setup_entity, hass, async_add_entities, config_entry=config_entry
+    )
+    await async_setup_entry_helper(hass, vacuum.DOMAIN, setup, DISCOVERY_SCHEMA)
 
 
-MQTT_VACUUM_SCHEMA = vol.Schema({
-    vol.Optional(CONF_SCHEMA, default=LEGACY): vol.All(
-        vol.Lower, vol.Any(LEGACY, STATE))
-})
-
-PLATFORM_SCHEMA = vol.All(MQTT_VACUUM_SCHEMA.extend({
-}, extra=vol.ALLOW_EXTRA), validate_mqtt_vacuum)
-
-
-async def async_setup_platform(hass, config, async_add_entities,
-                               discovery_info=None):
-    """Set up MQTT vacuum through configuration.yaml."""
-    await _async_setup_entity(config, async_add_entities,
-                              discovery_info)
-
-
-async def async_setup_entry(hass, config_entry, async_add_entities):
-    """Set up MQTT vacuum dynamically through MQTT discovery."""
-    async def async_discover(discovery_payload):
-        """Discover and add a MQTT vacuum."""
-        try:
-            discovery_hash = discovery_payload.pop(ATTR_DISCOVERY_HASH)
-            config = PLATFORM_SCHEMA(discovery_payload)
-            await _async_setup_entity(config, async_add_entities, config_entry,
-                                      discovery_hash)
-        except Exception:
-            if discovery_hash:
-                clear_discovery_hash(hass, discovery_hash)
-            raise
-
-    async_dispatcher_connect(
-        hass, MQTT_DISCOVERY_NEW.format(DOMAIN, 'mqtt'), async_discover)
-
-
-async def _async_setup_entity(config, async_add_entities, config_entry,
-                              discovery_hash=None):
+async def _async_setup_entity(
+    hass: HomeAssistant,
+    async_add_entities: AddEntitiesCallback,
+    config: ConfigType,
+    config_entry: ConfigEntry,
+    discovery_data: DiscoveryInfoType | None = None,
+) -> None:
     """Set up the MQTT vacuum."""
-    from . import schema_legacy
-    from . import schema_state
     setup_entity = {
-        LEGACY: schema_legacy.async_setup_entity_legacy,
-        STATE: schema_state.async_setup_entity_state,
+        LEGACY: async_setup_entity_legacy,
+        STATE: async_setup_entity_state,
     }
     await setup_entity[config[CONF_SCHEMA]](
-        config, async_add_entities, config_entry, discovery_hash)
+        hass, config, async_add_entities, config_entry, discovery_data
+    )

@@ -1,43 +1,59 @@
 """Constants in Logi Circle component."""
+from __future__ import annotations
 
-CONF_CLIENT_ID = 'client_id'
-CONF_CLIENT_SECRET = 'client_secret'
-CONF_API_KEY = 'api_key'
-CONF_REDIRECT_URI = 'redirect_uri'
+from homeassistant.components.sensor import SensorEntityDescription
+from homeassistant.const import PERCENTAGE
 
-DEFAULT_CACHEDB = '.logi_cache.pickle'
-
-DOMAIN = 'logi_circle'
+DOMAIN = "logi_circle"
 DATA_LOGI = DOMAIN
 
-LED_MODE_KEY = 'LED'
-RECORDING_MODE_KEY = 'RECORDING_MODE'
+CONF_REDIRECT_URI = "redirect_uri"
 
-# Sensor types: Name, unit of measure, icon per sensor key.
-LOGI_SENSORS = {
-    'battery_level': [
-        'Battery', '%', 'battery-50'],
+DEFAULT_CACHEDB = ".logi_cache.pickle"
 
-    'last_activity_time': [
-        "Last Activity", None, 'history'],
 
-    'recording': [
-        'Recording Mode', None, 'eye'],
+LED_MODE_KEY = "LED"
+RECORDING_MODE_KEY = "RECORDING_MODE"
 
-    'signal_strength_category': [
-        "WiFi Signal Category", None, 'wifi'],
+SENSOR_TYPES: tuple[SensorEntityDescription, ...] = (
+    SensorEntityDescription(
+        key="battery_level",
+        name="Battery",
+        native_unit_of_measurement=PERCENTAGE,
+        icon="mdi:battery-50",
+    ),
+    SensorEntityDescription(
+        key="last_activity_time",
+        name="Last Activity",
+        icon="mdi:history",
+    ),
+    SensorEntityDescription(
+        key="recording",
+        name="Recording Mode",
+        icon="mdi:eye",
+    ),
+    SensorEntityDescription(
+        key="signal_strength_category",
+        name="WiFi Signal Category",
+        icon="mdi:wifi",
+    ),
+    SensorEntityDescription(
+        key="signal_strength_percentage",
+        name="WiFi Signal Strength",
+        native_unit_of_measurement=PERCENTAGE,
+        icon="mdi:wifi",
+    ),
+    SensorEntityDescription(
+        key="streaming",
+        name="Streaming Mode",
+        icon="mdi:camera",
+    ),
+)
 
-    'signal_strength_percentage': [
-        "WiFi Signal Strength", '%', 'wifi'],
-
-    'streaming': [
-        'Streaming Mode', None, 'camera'],
-}
-
-SIGNAL_LOGI_CIRCLE_RECONFIGURE = 'logi_circle_reconfigure'
-SIGNAL_LOGI_CIRCLE_SNAPSHOT = 'logi_circle_snapshot'
-SIGNAL_LOGI_CIRCLE_RECORD = 'logi_circle_record'
+SIGNAL_LOGI_CIRCLE_RECONFIGURE = "logi_circle_reconfigure"
+SIGNAL_LOGI_CIRCLE_SNAPSHOT = "logi_circle_snapshot"
+SIGNAL_LOGI_CIRCLE_RECORD = "logi_circle_record"
 
 # Attribution
 ATTRIBUTION = "Data provided by circle.logi.com"
-DEVICE_BRAND = 'Logitech'
+DEVICE_BRAND = "Logitech"
